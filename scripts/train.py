@@ -29,6 +29,7 @@ from training.epoch_loop import (
     validate_full,
 )
 from training.lr_schedule import build_epoch_lr_scheduler, step_lr_scheduler
+from training.memory_utils import release_training_memory
 from training.mlflow_steps import new_stream_counters
 from training.hf_dataset import streaming_batches
 from training.metrics import l2_per_point_mean, mse_velocity, subsample_points
@@ -162,6 +163,7 @@ def _run_legacy_step_training(
 
     if verbose:
         print(f"[legacy train] finished {step} optimizer steps", flush=True)
+    release_training_memory()
 
     g = torch.Generator()
     g.manual_seed(eval_seed)
@@ -222,6 +224,7 @@ def _run_legacy_step_training(
                 flush=True,
             )
     save_state_dict_atomic(last_ckpt_path, model)
+    release_training_memory()
 
 
 def _run_epoch_training(
@@ -318,6 +321,7 @@ def _run_epoch_training(
         if n_val == 0:
             print("Validation produced zero batches; check data_split and HF access.")
             save_state_dict_atomic(last_ckpt_path, model)
+            release_training_memory()
             break
 
         # Epoch-level metrics use the zero-based epoch index (independent of batch counters).
@@ -369,6 +373,7 @@ def _run_epoch_training(
             )
 
         save_state_dict_atomic(last_ckpt_path, model)
+        release_training_memory()
 
         if epoch + 1 >= min_epochs and epochs_without_improve >= patience:
             mlflow.log_param("stopped_epoch", epoch + 1)
@@ -674,6 +679,7 @@ def main() -> int:
                     )
             except KeyboardInterrupt:
                 save_state_dict_atomic(last_ckpt, model)
+                release_training_memory()
                 if verbose:
                     print(
                         f"[checkpoint] Saved to {last_ckpt} (KeyboardInterrupt)\n",
@@ -682,6 +688,7 @@ def main() -> int:
                 raise
             except Exception as e:
                 save_state_dict_atomic(last_ckpt, model)
+                release_training_memory()
                 if verbose:
                     print(
                         f"[checkpoint] Saved to {last_ckpt} after error.\n",
@@ -697,6 +704,7 @@ def main() -> int:
             return 0
     finally:
         restore_sig()
+        release_training_memory()
 
 
 if __name__ == "__main__":

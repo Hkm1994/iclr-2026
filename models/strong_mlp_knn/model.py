@@ -21,14 +21,18 @@ def _surface_mask(
 
 
 def _neighbor_vel_mean_max(
-    pos: torch.Tensor, vel_mean: torch.Tensor, k: int
+    pos: torch.Tensor,
+    vel_mean: torch.Tensor,
+    k: int,
+    *,
+    row_chunk: int,
 ) -> torch.Tensor:
     """
     pos (N, 3), vel_mean (N, 3) — mean velocity over input time at each point.
     Returns (N, 6): neighbor-pooled mean and max of vel_mean over kNN (excluding self
     via inf diagonal in knn_indices_brute_force).
     """
-    idx = knn_indices_brute_force(pos, k)
+    idx = knn_indices_brute_force(pos, k, row_chunk=row_chunk)
     nbr = vel_mean[idx]
     nb_mean = nbr.mean(dim=1)
     nb_max = nbr.max(dim=1).values
@@ -45,6 +49,7 @@ class StrongMLPKnn(GramForecastModel):
     num_channels_default = (35, 512, 512, 256, 15)
     dropout_probability = 0.1
     knn_k_default = 16
+    knn_row_chunk_default = 1024
 
     def __init__(self, config: Optional[dict[str, Any]] = None):
         super().__init__()
@@ -52,6 +57,7 @@ class StrongMLPKnn(GramForecastModel):
         num_channels = tuple(cfg.get("num_channels", self.num_channels_default))
         self.num_channels = num_channels
         self.knn_k = int(cfg.get("knn_k", self.knn_k_default))
+        self.knn_row_chunk = int(cfg.get("knn_row_chunk", self.knn_row_chunk_default))
         dropout_p = float(cfg.get("dropout_probability", self.dropout_probability))
 
         self.linears = torch.nn.ModuleList()
@@ -98,7 +104,9 @@ class StrongMLPKnn(GramForecastModel):
         nbr_parts = []
         for b in range(batch_size):
             nbr_parts.append(
-                _neighbor_vel_mean_max(pos[b], vel_mean[b], k).unsqueeze(0)
+                _neighbor_vel_mean_max(
+                    pos[b], vel_mean[b], k, row_chunk=self.knn_row_chunk
+                ).unsqueeze(0)
             )
         nbr_feat = torch.cat(nbr_parts, dim=0)
         x = torch.cat((pos, x_vel, t_exp, surf, nbr_feat), dim=2)

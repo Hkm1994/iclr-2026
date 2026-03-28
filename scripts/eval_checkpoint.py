@@ -21,6 +21,7 @@ import torch
 
 from models.registry import get_model_class
 from training.epoch_loop import evaluate_split_full
+from training.memory_utils import release_training_memory
 from training.mlflow_steps import new_stream_counters
 from training.seeds import seed_all
 from training.yaml_config import load_yaml
@@ -198,6 +199,7 @@ def main() -> int:
                 flush=True,
             )
 
+    release_training_memory()
     print("Done. MLflow UI: mlflow ui --backend-store-uri ./mlruns", flush=True)
     return 0
 

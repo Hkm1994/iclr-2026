@@ -11,6 +11,8 @@ from typing import Any, Callable
 import torch
 from torch import nn
 
+from training.memory_utils import release_training_memory
+
 
 def state_dict_cpu(model: nn.Module) -> dict[str, torch.Tensor]:
     return {k: v.detach().cpu() for k, v in model.state_dict().items()}
@@ -61,6 +63,7 @@ def register_interrupt_checkpoint(
                 file=sys.stderr,
             )
         finally:
+            release_training_memory()
             signal.signal(signal.SIGINT, prev["int"])
             if prev.get("term") is not None:
                 try:

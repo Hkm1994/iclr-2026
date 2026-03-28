@@ -15,9 +15,10 @@ train:
   grad_accum_steps: 1
   train_subsample_N: 8192
   train_point_seed: 0
-  # Optional extra args for the model class (e.g. knn_k for strong_mlp_knn; default 16).
+  # Optional: knn_k (neighbors), knn_row_chunk (lower if CPU RAM is tight during full-cloud val).
   # model_config:
   #   knn_k: 24
+  #   knn_row_chunk: 512
   device: null
 
   eval_test_at_end: true
