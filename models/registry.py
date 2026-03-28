@@ -7,11 +7,13 @@ from typing import Type
 from torch.nn import Module
 
 from models.mlp.model import MLP
+from models.strong_mlp.model import StrongMLP
 from models.tiny_linear.model import TinyLinearBaseline
 
 MODELS: dict[str, Type[Module]] = {
     "tiny_linear": TinyLinearBaseline,
     "mlp": MLP,
+    "strong_mlp": StrongMLP,
 }
 
 

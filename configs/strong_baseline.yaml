@@ -1,0 +1,33 @@
+# Strong streaming baseline: full train/val each epoch, early stopping when val plateaus.
+experiment:
+  mlflow_experiment_name: gram-warped-ifw-strong
+
+paths:
+  data_split: configs/data_split.yaml
+  eval_protocol: configs/eval_protocol.yaml
+
+train:
+  model: strong_mlp
+  model_family: strong_mlp
+  lr: 0.0003
+  weight_decay: 0.01
+  batch_size: 1
+  grad_accum_steps: 1
+  train_subsample_N: 8192
+  train_point_seed: 0
+  device: null
+
+  # Full passes over hash_ids train / val partitions (see data_split.yaml).
+  max_epochs: 200
+  min_epochs: 20
+  early_stopping_patience: 15
+  early_stopping_min_delta: 1.0e-5
+  # Defaults to eval_protocol.primary_kpi if omitted:
+  early_stopping_monitor: val/l2_per_point_mean
+  early_stopping_lower_is_better: null
+
+  best_checkpoint_path: checkpoints/strong_mlp_best.pt
+
+  # Step-based single pass (legacy); ignored when max_epochs is set.
+  max_train_steps: null
+  max_val_steps: null
