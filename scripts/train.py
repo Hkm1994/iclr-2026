@@ -55,6 +55,26 @@ def _positive_int_or_none(x) -> int | None:
     return n
 
 
+def _point_subsample_options(train_cfg: dict, epoch_idx: int, max_epochs: int) -> dict:
+    """Train-time point subsample mode; ``lam_fraction`` can vary by epoch."""
+    ps = train_cfg.get("point_subsample")
+    if not ps:
+        return {"mode": "random"}
+    mode = str(ps.get("mode", "random"))
+    if mode != "stratified_lam_turb":
+        return {"mode": mode}
+    max_e = max(int(max_epochs), 1)
+    t = 0.0 if max_e <= 1 else float(epoch_idx) / float(max_e - 1)
+    lam0 = float(ps.get("lam_fraction_start", 0.5))
+    lam1 = float(ps.get("lam_fraction_end", 0.5))
+    lam_f = lam0 + t * (lam1 - lam0)
+    return {
+        "mode": "stratified_lam_turb",
+        "lam_fraction": lam_f,
+        "pool_quantile": float(ps.get("pool_quantile", 0.5)),
+    }
+
+
 def _run_legacy_step_training(
     *,
     model,
@@ -256,6 +276,7 @@ def _run_epoch_training(
                 f"\n--- Epoch {epoch + 1}/{max_epochs} | train (seed_ep={seed_ep}) ---",
                 flush=True,
             )
+        subsample_opts = _point_subsample_options(train_cfg, epoch, max_epochs)
         train_loss, n_tr = train_one_epoch(
             model=model,
             opt=opt,
@@ -265,18 +286,19 @@ def _run_epoch_training(
             grad_accum=grad_accum,
             train_subsample_N=train_sub,
             point_seed=seed_ep,
+            global_step_counter=global_step_counter,
             epoch_idx=epoch,
             log_every_n_batches=log_every_n_train_batches,
             verbose=verbose,
             heartbeat_seconds=heartbeat_seconds,
-            global_step_counter=global_step_counter,
+            subsample_options=subsample_opts,
         )
         if verbose:
             print(
                 f"--- Epoch {epoch + 1}/{max_epochs} | validation ---",
                 flush=True,
             )
-        val_mse, val_l2, n_val = validate_full(
+        val_mse, val_l2, n_val, val_lt = validate_full(
             model=model,
             data_split_path=data_split_path,
             device=device,
@@ -304,6 +326,14 @@ def _run_epoch_training(
         mlflow.log_metric("train/mse_velocity_epoch_mean", train_loss, step=ep_step)
         mlflow.log_metric("val/mse_velocity", val_mse, step=ep_step)
         mlflow.log_metric("val/l2_per_point_mean", val_l2, step=ep_step)
+        for k, v in val_lt.items():
+            mlflow.log_metric(k, v, step=ep_step)
+            if k.startswith("val/"):
+                mlflow.log_metric(
+                    "epoch/val_" + k.removeprefix("val/").replace("/", "_"),
+                    v,
+                    step=ep_step,
+                )
 
         current = val_mse if metric_keys[monitor] == "mse" else val_l2
 
@@ -347,7 +377,7 @@ def _run_epoch_training(
     if eval_test_at_end:
         if verbose:
             print("\n=== Final pass: held-out test split (all test shards) ===", flush=True)
-        test_mse, test_l2, n_te = evaluate_split_full(
+        test_mse, test_l2, n_te, test_lt = evaluate_split_full(
             model=model,
             data_split_path=data_split_path,
             device=device,
@@ -367,6 +397,8 @@ def _run_epoch_training(
             mlflow.log_metric("test/mse_velocity", test_mse, step=ts)
             mlflow.log_metric("test/l2_per_point_mean", test_l2, step=ts)
             mlflow.log_metric("test/batches", float(n_te), step=ts)
+            for k, v in test_lt.items():
+                mlflow.log_metric(k, v, step=ts)
             if verbose:
                 print(
                     f"Test summary: mean_mse={test_mse:.6f} mean_l2={test_l2:.6f} "
@@ -510,6 +542,10 @@ def main() -> int:
     )
     if not use_epochs:
         params["log_mlflow_train_every_n_steps"] = log_mlflow_train_every or "off"
+
+    ps = train_cfg.get("point_subsample")
+    if ps:
+        params["point_subsample"] = repr(ps)
 
     mlflow_run_name = make_mlflow_run_name(model_name, train_cfg, exp_cfg)
     params["mlflow_run_name"] = mlflow_run_name

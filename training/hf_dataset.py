@@ -12,6 +12,7 @@ from datasets import load_dataset
 
 from training.explicit_ids import load_id_set
 from training.hf_npz_hub import hub_dataset_has_only_npz_error, iter_npz_root_samples
+from training.metrics import temporal_turbulence_proxy
 from training.split_assign import assign_phase_hash_ids, get_sample_id
 from training.yaml_config import load_yaml
 
@@ -25,6 +26,8 @@ class Batch:
     idcs_airfoil: list[torch.Tensor]
     velocity_in: torch.Tensor  # (B, 5, N, 3)
     velocity_out: torch.Tensor  # (B, 5, N, 3)
+    # True = laminar-like pool (low temporal fluctuation proxy) after stratified subsample
+    lam_point_mask: torch.Tensor | None = None  # (B, N) bool
 
 
 def load_data_split_config(path: str | Path) -> dict[str, Any]:
@@ -89,6 +92,82 @@ def subsample_points_inplace(
     tensors["idcs_airfoil"] = new_idcs
 
 
+def subsample_points_stratified_lam_turb_inplace(
+    tensors: dict[str, Any],
+    n_points: int,
+    rng: np.random.Generator,
+    lam_fraction: float,
+    quantile: float = 0.5,
+) -> None:
+    """
+    Subsample points with a target fraction from the low temporal-fluctuation pool.
+
+    Pool split uses ``quantile`` on ``temporal_turbulence_proxy`` over the full cloud.
+    """
+    if n_points is None:
+        return
+    pos = tensors["pos"]
+    n = pos.shape[0]
+    if n_points >= n:
+        return
+    velocity_in = tensors["velocity_in"]
+    scores = temporal_turbulence_proxy(velocity_in)
+    scores_np = scores.detach().float().cpu().numpy()
+    thresh = float(np.quantile(scores_np, quantile))
+    lam_pool = np.where(scores_np <= thresh)[0]
+    turb_pool = np.where(scores_np > thresh)[0]
+    if lam_pool.size == 0:
+        lam_pool = np.array([int(scores_np.argmin())], dtype=np.int64)
+    if turb_pool.size == 0:
+        turb_pool = np.array([int(scores_np.argmax())], dtype=np.int64)
+
+    lam_fraction = float(max(0.0, min(1.0, lam_fraction)))
+    n_lam_des = int(round(n_points * lam_fraction))
+    n_lam_des = max(0, min(n_points, n_lam_des))
+    n_lam = min(n_lam_des, int(lam_pool.size))
+    n_turb = min(n_points - n_lam, int(turb_pool.size))
+
+    pick_lam = (
+        rng.choice(lam_pool, size=n_lam, replace=False) if n_lam > 0 else np.array([], np.int64)
+    )
+    pick_turb = (
+        rng.choice(turb_pool, size=n_turb, replace=False)
+        if n_turb > 0
+        else np.array([], np.int64)
+    )
+    selected = np.unique(np.concatenate([pick_lam, pick_turb]))
+    if selected.size < n_points:
+        rem = np.setdiff1d(np.arange(n, dtype=np.int64), selected)
+        need = int(n_points - int(selected.size))
+        if rem.size > 0 and need > 0:
+            take = min(need, int(rem.size))
+            extra = rng.choice(rem, size=take, replace=False)
+            selected = np.unique(np.concatenate([selected, extra]))
+    if int(selected.size) > n_points:
+        selected = np.sort(rng.choice(selected, size=n_points, replace=False))
+    else:
+        selected = np.sort(selected)
+
+    idx_np = selected.astype(np.int64)
+    idx = torch.tensor(idx_np, dtype=torch.long, device=pos.device)
+    is_lam = torch.tensor(
+        scores_np[idx_np] <= thresh, dtype=torch.bool, device=pos.device
+    )
+    inv = {int(old): new for new, old in enumerate(idx.tolist())}
+
+    tensors["pos"] = pos[idx]
+    tensors["velocity_in"] = tensors["velocity_in"][:, idx, :]
+    tensors["velocity_out"] = tensors["velocity_out"][:, idx, :]
+    tensors["lam_point_mask"] = is_lam
+
+    idcs = tensors["idcs_airfoil"]
+    tensors["idcs_airfoil"] = torch.tensor(
+        [inv[int(i)] for i in idcs.tolist() if int(i) in inv],
+        dtype=torch.long,
+        device=pos.device,
+    )
+
+
 def stack_batch(samples: list[dict[str, Any]]) -> Batch:
     """Stack single-sample tensor dicts into a batch (variable idcs_airfoil as list)."""
     t = torch.stack([s["t"] for s in samples], dim=0)
@@ -96,7 +175,19 @@ def stack_batch(samples: list[dict[str, Any]]) -> Batch:
     vi = torch.stack([s["velocity_in"] for s in samples], dim=0)
     vo = torch.stack([s["velocity_out"] for s in samples], dim=0)
     idcs_list = [s["idcs_airfoil"] for s in samples]
-    return Batch(t=t, pos=pos, idcs_airfoil=idcs_list, velocity_in=vi, velocity_out=vo)
+    lams = [s.get("lam_point_mask") for s in samples]
+    if all(x is not None for x in lams):
+        lam_point_mask = torch.stack(lams, dim=0)
+    else:
+        lam_point_mask = None
+    return Batch(
+        t=t,
+        pos=pos,
+        idcs_airfoil=idcs_list,
+        velocity_in=vi,
+        velocity_out=vo,
+        lam_point_mask=lam_point_mask,
+    )
 
 
 def _split_name_for_phase(ds_cfg: dict[str, Any], phase: SplitPhase) -> str:
@@ -223,17 +314,28 @@ def streaming_batches(
     point_seed: int = 0,
     dtype: torch.dtype = torch.float32,
     max_batches: int | None = None,
+    subsample_options: dict[str, Any] | None = None,
 ) -> Iterator[Batch]:
     """Yield collated batches; optional point subsampling per sample (training)."""
     stream = build_stream(data_split_path, phase)
     buf: list[dict[str, Any]] = []
     n_out = 0
     sample_counter = 0
+    opt = subsample_options or {}
+    mode = str(opt.get("mode", "random"))
     for row in stream:
         rng = np.random.default_rng(int(point_seed) + sample_counter)
         sample_counter += 1
         tensors = row_to_tensors(row, device=device, dtype=dtype)
-        subsample_points_inplace(tensors, train_subsample_N, rng)
+        tensors.pop("lam_point_mask", None)
+        if train_subsample_N is not None and mode == "stratified_lam_turb":
+            lam_f = float(opt.get("lam_fraction", 0.5))
+            q = float(opt.get("pool_quantile", 0.5))
+            subsample_points_stratified_lam_turb_inplace(
+                tensors, train_subsample_N, rng, lam_f, quantile=q
+            )
+        else:
+            subsample_points_inplace(tensors, train_subsample_N, rng)
         buf.append(tensors)
         if len(buf) >= batch_size:
             yield stack_batch(buf)
