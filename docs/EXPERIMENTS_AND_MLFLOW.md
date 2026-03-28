@@ -12,7 +12,7 @@ Optional: `--max-train-steps 10` for a quick smoke (overrides YAML if wired—cu
 
 ## What is logged
 
-- **Params:** `model_family`, `model`, `data_split_version`, `eval_protocol_version`, `seed`, lr, batch size, `train_subsample_N`, `eval_subsample_N`, config path.
+- **Params:** `mlflow_run_name`, `model_family`, `model`, `data_split_version`, `eval_protocol_version`, `seed`, lr, batch size, `train_subsample_N`, `eval_subsample_N`, config path.
 - **Metrics:** `train/mse_velocity`, `val/mse_velocity`, `val/l2_per_point_mean` (keys come from `configs/eval_protocol.yaml`).
 
 ## Compare runs
@@ -34,4 +34,4 @@ Only compare runs with the same **`eval_protocol_version`** and **`data_split_ve
 
 ## Naming
 
-Optionally set MLflow run names/tags from the UI or extend `scripts/train.py` to call `mlflow.set_tag`.
+Each training run gets a **unique** MLflow `run_name`: `{model}-{utc_timestamp}-{random}` (or `{prefix}-{model}-…` if you set `mlflow_run_name_prefix` under `train:` or `experiment:` in the YAML). The same string is logged as param `mlflow_run_name`. Add extra tags from the UI or with `mlflow.set_tag` in code if you need more structure.

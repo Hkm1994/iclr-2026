@@ -33,8 +33,8 @@ train:
 
   # Terminal + MLflow: batch-level metrics during each train/val pass (set 0 or null to disable).
   verbose: true
-  log_every_n_train_batches: 5
-  log_every_n_val_batches: 5
+  log_every_n_train_batches: 100
+  log_every_n_val_batches: 100
 
   # Step-based single pass (legacy); ignored when max_epochs is set.
   max_train_steps: null

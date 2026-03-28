@@ -26,6 +26,7 @@ from training.epoch_loop import is_better, train_one_epoch, validate_full
 from training.hf_dataset import streaming_batches
 from training.metrics import l2_per_point_mean, mse_velocity, subsample_points
 from training.seeds import seed_all
+from training.mlflow_run_name import make_mlflow_run_name
 from training.train_checkpointing import (
     register_interrupt_checkpoint,
     save_state_dict_atomic,
@@ -458,13 +459,20 @@ def main() -> int:
     if not use_epochs:
         params["log_mlflow_train_every_n_steps"] = log_mlflow_train_every or "off"
 
+    mlflow_run_name = make_mlflow_run_name(model_name, train_cfg, exp_cfg)
+    params["mlflow_run_name"] = mlflow_run_name
+
     restore_sig = register_interrupt_checkpoint(model, last_ckpt, verbose=verbose)
     try:
-        with mlflow.start_run():
+        with mlflow.start_run(run_name=mlflow_run_name):
             mlflow.log_params(params)
             mlflow.log_artifact(str(cfg_path), artifact_path="config")
 
             if verbose:
+                print(
+                    f"MLflow run_name={mlflow_run_name}",
+                    flush=True,
+                )
                 print(
                     f"MLflow experiment={exp_cfg.get('mlflow_experiment_name', 'gram-warped-ifw')} "
                     f"tracking_uri={os.environ.get('MLFLOW_TRACKING_URI', 'file:./mlruns')}",
