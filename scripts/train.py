@@ -28,6 +28,7 @@ from training.epoch_loop import (
     train_one_epoch,
     validate_full,
 )
+from training.mlflow_steps import new_stream_counters
 from training.hf_dataset import streaming_batches
 from training.metrics import l2_per_point_mean, mse_velocity, subsample_points
 from training.seeds import seed_all
@@ -210,8 +211,9 @@ def _run_legacy_step_training(
                 break
 
     if val_count > 0:
-        mlflow.log_metric("val/mse_velocity", val_mse_acc / val_count)
-        mlflow.log_metric("val/l2_per_point_mean", val_l2_acc / val_count)
+        vs = val_count
+        mlflow.log_metric("val/mse_velocity", val_mse_acc / val_count, step=vs)
+        mlflow.log_metric("val/l2_per_point_mean", val_l2_acc / val_count, step=vs)
         if verbose:
             print(
                 f"[legacy val] mean mse={val_mse_acc / val_count:.6f} "
@@ -260,7 +262,7 @@ def _run_epoch_training(
 
     best = float("inf") if lower_is_better else float("-inf")
     epochs_without_improve = 0
-    global_step_counter = [0]
+    stream_steps = new_stream_counters()
 
     if verbose:
         print(
@@ -286,7 +288,7 @@ def _run_epoch_training(
             grad_accum=grad_accum,
             train_subsample_N=train_sub,
             point_seed=seed_ep,
-            global_step_counter=global_step_counter,
+            train_stream_step_counter=stream_steps.train_batch,
             epoch_idx=epoch,
             log_every_n_batches=log_every_n_train_batches,
             verbose=verbose,
@@ -309,14 +311,15 @@ def _run_epoch_training(
             log_every_n_batches=log_every_n_val_batches,
             verbose=verbose,
             heartbeat_seconds=heartbeat_seconds,
-            global_step_counter=global_step_counter,
+            eval_stream_step_counter=stream_steps.val_batch,
         )
         if n_val == 0:
             print("Validation produced zero batches; check data_split and HF access.")
             save_state_dict_atomic(last_ckpt_path, model)
             break
 
-        ep_step = global_step_counter[0]
+        # Epoch-level metrics use the zero-based epoch index (independent of batch counters).
+        ep_step = epoch
         mlflow.log_metric("epoch/train_mean_mse", train_loss, step=ep_step)
         mlflow.log_metric("epoch/train_batches", float(n_tr), step=ep_step)
         mlflow.log_metric("epoch/val_mse", val_mse, step=ep_step)
@@ -389,11 +392,11 @@ def _run_epoch_training(
             log_every_n_batches=log_every_n_val_batches,
             verbose=verbose,
             heartbeat_seconds=heartbeat_seconds,
-            global_step_counter=global_step_counter,
+            eval_stream_step_counter=stream_steps.test_batch,
             run_label="held-out test",
         )
         if n_te > 0:
-            ts = global_step_counter[0]
+            ts = stream_steps.test_batch[0]
             mlflow.log_metric("test/mse_velocity", test_mse, step=ts)
             mlflow.log_metric("test/l2_per_point_mean", test_l2, step=ts)
             mlflow.log_metric("test/batches", float(n_te), step=ts)

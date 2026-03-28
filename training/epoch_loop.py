@@ -29,7 +29,7 @@ def train_one_epoch(
     grad_accum: int,
     train_subsample_N: int | None,
     point_seed: int,
-    global_step_counter: list[int],
+    train_stream_step_counter: list[int],
     epoch_idx: int = 0,
     log_every_n_batches: int | None = 5,
     verbose: bool = True,
@@ -39,8 +39,8 @@ def train_one_epoch(
     """
     One full pass over the train split.
 
-    ``global_step_counter`` is a length-1 list holding the running MLflow step; it is
-    incremented once per batch and used for all ``log_metric`` calls (monotonic).
+    ``train_stream_step_counter`` is a length-1 list incremented once per batch;
+    it is the MLflow ``step`` for ``stream/train_*`` metrics only.
     """
     model.train()
     opt.zero_grad(set_to_none=True)
@@ -70,8 +70,8 @@ def train_one_epoch(
             opt.zero_grad(set_to_none=True)
             accum = 0
 
-        global_step_counter[0] += 1
-        step = global_step_counter[0]
+        train_stream_step_counter[0] += 1
+        step = train_stream_step_counter[0]
 
         if log_every_n_batches and (
             n_batches == 1 or n_batches % log_every_n_batches == 0
@@ -107,7 +107,7 @@ def train_one_epoch(
                 print(
                     f"  [train] epoch {epoch_idx + 1} batch {n_batches} | "
                     f"last_mse={last_mse:.6f} running_mean_mse={partial_mean:.6f} | "
-                    f"batch_points={n_pts} device={device} | mlflow_step={step}",
+                    f"batch_points={n_pts} device={device} | train_stream_step={step}",
                     flush=True,
                 )
 
@@ -150,12 +150,13 @@ def evaluate_split_full(
     log_every_n_batches: int | None = 5,
     verbose: bool = True,
     heartbeat_seconds: float | None = None,
-    global_step_counter: list[int],
+    eval_stream_step_counter: list[int],
     run_label: str | None = None,
 ) -> tuple[float, float, int, dict[str, float]]:
     """
     Full pass over ``phase`` (``val`` or ``test``). MLflow partial metrics use
-    ``stream/val_*`` or ``stream/test_*`` so they stay separate from epoch summaries.
+    ``stream/val_*`` or ``stream/test_*`` with ``eval_stream_step_counter`` as ``step``
+    (independent from training and from epoch-level metrics).
 
     When ``eval_subsample_N`` is set and ``batch_size == 1``, the fourth return value
     contains epoch-mean proxy KPIs ``{tag}/mse_lam_proxy``, ``{tag}/mse_turb_proxy``,
@@ -222,8 +223,8 @@ def evaluate_split_full(
         l2_acc += l2_b
         n += 1
 
-        global_step_counter[0] += 1
-        step = global_step_counter[0]
+        eval_stream_step_counter[0] += 1
+        step = eval_stream_step_counter[0]
 
         if log_every_n_batches and (n == 1 or n % log_every_n_batches == 0):
             mlflow.log_metric(mse_key, mse_acc / n, step=step)
@@ -258,7 +259,7 @@ def evaluate_split_full(
                     f"  [{tag}] {label} batch {n} | "
                     f"batch_mse={mse_b:.6f} batch_l2={l2_b:.6f} | "
                     f"running_mean_mse={mse_acc / n:.6f} running_mean_l2={l2_acc / n:.6f} | "
-                    f"mlflow_step={step}",
+                    f"{tag}_stream_step={step}",
                     flush=True,
                 )
 
@@ -306,7 +307,7 @@ def validate_full(
     log_every_n_batches: int | None = 5,
     verbose: bool = True,
     heartbeat_seconds: float | None = None,
-    global_step_counter: list[int],
+    eval_stream_step_counter: list[int],
     run_label: str | None = None,
 ) -> tuple[float, float, int, dict[str, float]]:
     """Backward-compatible alias: evaluate validation split."""
@@ -322,7 +323,7 @@ def validate_full(
         log_every_n_batches=log_every_n_batches,
         verbose=verbose,
         heartbeat_seconds=heartbeat_seconds,
-        global_step_counter=global_step_counter,
+        eval_stream_step_counter=eval_stream_step_counter,
         run_label=run_label,
     )
 
