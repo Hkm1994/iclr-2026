@@ -107,6 +107,9 @@ def main() -> int:
     batch_size = int(train_cfg.get("batch_size", 1))
     eval_sub = ev_cfg.get("eval_subsample_N")
     eval_seed = int(ev_cfg.get("eval_point_subsample_seed", 0))
+    eval_preforward_subsample_N = _positive_int_or_none(
+        train_cfg.get("eval_preforward_subsample_N")
+    )
     verbose = bool(train_cfg.get("verbose", True)) and not args.quiet
     log_every_val = _positive_int_or_none(
         train_cfg.get(
@@ -136,6 +139,11 @@ def main() -> int:
         "data_split_version": str(ds_cfg.get("version", "unknown")),
         "eval_protocol_version": str(ev_cfg.get("version", "unknown")),
         "eval_subsample_N": eval_sub if eval_sub is not None else "full",
+        "eval_preforward_subsample_N": (
+            eval_preforward_subsample_N
+            if eval_preforward_subsample_N is not None
+            else "off"
+        ),
         "seed": master_seed,
     }
 
@@ -176,6 +184,7 @@ def main() -> int:
             heartbeat_seconds=heartbeat_seconds,
             eval_stream_step_counter=stream_steps.test_batch,
             run_label="held-out test (eval_checkpoint)",
+            eval_preforward_subsample_N=eval_preforward_subsample_N,
         )
 
         if n_te == 0:

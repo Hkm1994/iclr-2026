@@ -31,7 +31,7 @@ from training.epoch_loop import (
 from training.lr_schedule import build_epoch_lr_scheduler, step_lr_scheduler
 from training.memory_utils import release_training_memory
 from training.mlflow_steps import new_stream_counters
-from training.hf_dataset import streaming_batches
+from training.hf_dataset import streaming_batches, subsample_batch_preforward
 from training.metrics import l2_per_point_mean, mse_velocity, subsample_points
 from training.seeds import seed_all
 from training.mlflow_run_name import make_mlflow_run_name
@@ -94,6 +94,7 @@ def _run_legacy_step_training(
     point_seed_train: int,
     eval_seed: int,
     eval_sub,
+    eval_preforward_subsample_N: int | None,
     verbose: bool,
     log_every_n_train_batches: int | None,
     log_mlflow_train_every_n: int | None,
@@ -185,6 +186,8 @@ def _run_legacy_step_training(
         print(f"[legacy val] max_val_steps={max_val}", flush=True)
     with torch.no_grad():
         for batch in val_it:
+            if eval_preforward_subsample_N is not None:
+                batch = subsample_batch_preforward(batch, eval_preforward_subsample_N, g)
             pred = model(batch.t, batch.pos, batch.idcs_airfoil, batch.velocity_in)
             p, tgt = subsample_points(pred, batch.velocity_out, eval_sub, generator=g)
             vm = mse_velocity(p, tgt)
@@ -241,6 +244,7 @@ def _run_epoch_training(
     point_seed_train: int,
     eval_seed: int,
     eval_sub,
+    eval_preforward_subsample_N: int | None,
     max_epochs: int,
     min_epochs: int,
     patience: int,
@@ -317,6 +321,7 @@ def _run_epoch_training(
             verbose=verbose,
             heartbeat_seconds=heartbeat_seconds,
             eval_stream_step_counter=stream_steps.val_batch,
+            eval_preforward_subsample_N=eval_preforward_subsample_N,
         )
         if n_val == 0:
             print("Validation produced zero batches; check data_split and HF access.")
@@ -409,6 +414,7 @@ def _run_epoch_training(
             heartbeat_seconds=heartbeat_seconds,
             eval_stream_step_counter=stream_steps.test_batch,
             run_label="held-out test",
+            eval_preforward_subsample_N=eval_preforward_subsample_N,
         )
         if n_te > 0:
             ts = stream_steps.test_batch[0]
@@ -486,6 +492,9 @@ def main() -> int:
     point_seed_train = int(train_cfg.get("train_point_seed", 0))
     eval_sub = ev_cfg.get("eval_subsample_N")
     eval_seed = int(ev_cfg.get("eval_point_subsample_seed", 0))
+    eval_preforward_subsample_N = _positive_int_or_none(
+        train_cfg.get("eval_preforward_subsample_N")
+    )
 
     max_epochs = train_cfg.get("max_epochs")
     use_epochs = max_epochs is not None
@@ -532,6 +541,11 @@ def main() -> int:
         "batch_size": batch_size,
         "train_subsample_N": train_sub if train_sub is not None else "full",
         "eval_subsample_N": eval_sub if eval_sub is not None else "full",
+        "eval_preforward_subsample_N": (
+            eval_preforward_subsample_N
+            if eval_preforward_subsample_N is not None
+            else "off"
+        ),
         "config_file": str(cfg_path),
         "training_mode": "epoch" if use_epochs else "steps",
     }
@@ -636,6 +650,7 @@ def main() -> int:
                         point_seed_train=point_seed_train,
                         eval_seed=eval_seed,
                         eval_sub=eval_sub,
+                        eval_preforward_subsample_N=eval_preforward_subsample_N,
                         max_epochs=int(max_epochs),
                         min_epochs=int(train_cfg.get("min_epochs", 1)),
                         patience=int(train_cfg.get("early_stopping_patience", 10)),
@@ -672,6 +687,7 @@ def main() -> int:
                         point_seed_train=point_seed_train,
                         eval_seed=eval_seed,
                         eval_sub=eval_sub,
+                        eval_preforward_subsample_N=eval_preforward_subsample_N,
                         verbose=verbose,
                         log_every_n_train_batches=log_every_train,
                         log_mlflow_train_every_n=log_mlflow_train_every,

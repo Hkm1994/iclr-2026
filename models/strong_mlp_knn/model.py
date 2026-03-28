@@ -20,7 +20,7 @@ def _surface_mask(
     return m
 
 
-def _neighbor_vel_mean_max(
+def _neighbor_vel_and_rel_pos_pools(
     pos: torch.Tensor,
     vel_mean: torch.Tensor,
     k: int,
@@ -29,24 +29,28 @@ def _neighbor_vel_mean_max(
 ) -> torch.Tensor:
     """
     pos (N, 3), vel_mean (N, 3) — mean velocity over input time at each point.
-    Returns (N, 6): neighbor-pooled mean and max of vel_mean over kNN (excluding self
-    via inf diagonal in knn_indices_brute_force).
+    Single kNN index pass; returns (N, 12): mean/max neighbor vel_mean, then mean/max
+    of (pos_j - pos_i) over neighbors (self excluded via inf diagonal in kNN).
     """
     idx = knn_indices_brute_force(pos, k, row_chunk=row_chunk)
-    nbr = vel_mean[idx]
-    nb_mean = nbr.mean(dim=1)
-    nb_max = nbr.max(dim=1).values
-    return torch.cat([nb_mean, nb_max], dim=-1)
+    nbr_v = vel_mean[idx]
+    nbv_mean = nbr_v.mean(dim=1)
+    nbv_max = nbr_v.max(dim=1).values
+    nbr_p = pos[idx]
+    delta = nbr_p - pos.unsqueeze(1)
+    nbp_mean = delta.mean(dim=1)
+    nbp_max = delta.max(dim=1).values
+    return torch.cat([nbv_mean, nbv_max, nbp_mean, nbp_max], dim=-1)
 
 
 class StrongMLPKnn(GramForecastModel):
     """
-    strong_mlp input plus kNN neighbor statistics of time-mean input velocity
-    (mean and max over neighbors), then the same MLP trunk.
+    strong_mlp input plus kNN neighbor statistics: time-mean input velocity pools and
+    relative-position pools (mean/max over neighbors), then the same MLP trunk.
     """
 
-    # 3 + 5*3 + 10 + 1 + 6 = 35
-    num_channels_default = (35, 512, 512, 256, 15)
+    # 3 + 5*3 + 10 + 1 + 12 = 41  (12 = vel mean/max + rel-pos delta mean/max)
+    num_channels_default = (41, 512, 512, 256, 15)
     dropout_probability = 0.1
     knn_k_default = 16
     knn_row_chunk_default = 1024
@@ -104,7 +108,7 @@ class StrongMLPKnn(GramForecastModel):
         nbr_parts = []
         for b in range(batch_size):
             nbr_parts.append(
-                _neighbor_vel_mean_max(
+                _neighbor_vel_and_rel_pos_pools(
                     pos[b], vel_mean[b], k, row_chunk=self.knn_row_chunk
                 ).unsqueeze(0)
             )

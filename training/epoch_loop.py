@@ -9,7 +9,7 @@ import mlflow
 import torch
 from torch.optim import Optimizer
 
-from training.hf_dataset import SplitPhase, streaming_batches
+from training.hf_dataset import SplitPhase, streaming_batches, subsample_batch_preforward
 from training.memory_utils import release_training_memory
 from training.metrics import (
     l2_per_point_mean,
@@ -166,6 +166,7 @@ def evaluate_split_full(
     heartbeat_seconds: float | None = None,
     eval_stream_step_counter: list[int],
     run_label: str | None = None,
+    eval_preforward_subsample_N: int | None = None,
 ) -> tuple[float, float, int, dict[str, float]]:
     """
     Full pass over ``phase`` (``val`` or ``test``). MLflow partial metrics use
@@ -175,6 +176,10 @@ def evaluate_split_full(
     When ``eval_subsample_N`` is set and ``batch_size == 1``, the fourth return value
     contains epoch-mean proxy KPIs ``{tag}/mse_lam_proxy``, ``{tag}/mse_turb_proxy``,
     and L2 counterparts (median split on temporal fluctuation within the subsample).
+
+    If ``eval_preforward_subsample_N`` is set, points are subsampled (same RNG stream as
+    metric subsampling) before ``forward``, so kNN-style models see the same scale as
+    training-time ``train_subsample_N``.
     """
     tag = "val" if phase == "val" else "test"
     label = run_label or f"epoch {epoch_idx + 1}"
@@ -203,6 +208,10 @@ def evaluate_split_full(
 
     try:
         for batch in it:
+            if eval_preforward_subsample_N is not None:
+                batch = subsample_batch_preforward(
+                    batch, eval_preforward_subsample_N, g
+                )
             pred = model(batch.t, batch.pos, batch.idcs_airfoil, batch.velocity_in)
             if lam_turb_kpis:
                 p, tgt, idx = subsample_points(
@@ -326,6 +335,7 @@ def validate_full(
     heartbeat_seconds: float | None = None,
     eval_stream_step_counter: list[int],
     run_label: str | None = None,
+    eval_preforward_subsample_N: int | None = None,
 ) -> tuple[float, float, int, dict[str, float]]:
     """Backward-compatible alias: evaluate validation split."""
     return evaluate_split_full(
@@ -342,6 +352,7 @@ def validate_full(
         heartbeat_seconds=heartbeat_seconds,
         eval_stream_step_counter=eval_stream_step_counter,
         run_label=run_label,
+        eval_preforward_subsample_N=eval_preforward_subsample_N,
     )
 
 

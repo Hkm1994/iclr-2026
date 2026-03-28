@@ -190,6 +190,56 @@ def stack_batch(samples: list[dict[str, Any]]) -> Batch:
     )
 
 
+def subsample_batch_preforward(
+    batch: Batch,
+    n_points: int,
+    generator: torch.Generator | None,
+) -> Batch:
+    """
+    Subsample spatial points before ``model.forward`` (val/test), remapping ``idcs_airfoil``.
+
+    Matches training-time point count so kNN (and similar) see consistent graph scale.
+    """
+    b, n_full, _ = batch.pos.shape
+    if n_points >= n_full:
+        return batch
+    device = batch.pos.device
+    new_pos: list[torch.Tensor] = []
+    new_vi: list[torch.Tensor] = []
+    new_vo: list[torch.Tensor] = []
+    new_idcs: list[torch.Tensor] = []
+    new_lam: list[torch.Tensor] = []
+    for bi in range(b):
+        if generator is not None:
+            perm = torch.randperm(n_full, device="cpu", generator=generator)
+        else:
+            perm = torch.randperm(n_full, device="cpu")
+        idx = perm[:n_points].to(device=device, dtype=torch.long)
+        idx, _ = torch.sort(idx)
+        inv = {int(old): new_i for new_i, old in enumerate(idx.tolist())}
+        new_pos.append(batch.pos[bi, idx, :])
+        new_vi.append(batch.velocity_in[bi, :, idx, :])
+        new_vo.append(batch.velocity_out[bi, :, idx, :])
+        idcs = batch.idcs_airfoil[bi]
+        new_idcs.append(
+            torch.tensor(
+                [inv[int(i)] for i in idcs.tolist() if int(i) in inv],
+                dtype=torch.long,
+                device=device,
+            )
+        )
+        if batch.lam_point_mask is not None:
+            new_lam.append(batch.lam_point_mask[bi, idx])
+    return Batch(
+        t=batch.t,
+        pos=torch.stack(new_pos, dim=0),
+        idcs_airfoil=new_idcs,
+        velocity_in=torch.stack(new_vi, dim=0),
+        velocity_out=torch.stack(new_vo, dim=0),
+        lam_point_mask=torch.stack(new_lam, dim=0) if new_lam else None,
+    )
+
+
 def _split_name_for_phase(ds_cfg: dict[str, Any], phase: SplitPhase) -> str:
     mode = ds_cfg["split"]["mode"]
     if mode == "hf_native":
