@@ -1,0 +1,17 @@
+# Stub — enable when models/gnn is implemented; same layout as example_mlp.yaml.
+experiment:
+  mlflow_experiment_name: gram-warped-ifw
+
+paths:
+  data_split: configs/data_split.yaml
+  eval_protocol: configs/eval_protocol.yaml
+
+train:
+  model: gnn
+  model_family: gnn
+  lr: 0.0001
+  max_train_steps: 10
+  batch_size: 1
+  train_subsample_N: 4096
+  k_neighbors: 16
+  device: null

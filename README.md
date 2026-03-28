@@ -11,6 +11,28 @@ For description of the challenge refer to the competition website (link above).
 
 Deadline is on **April 22, 2026 (AoE)**.
 
+## Local development (training stack)
+
+This repo includes a small training pipeline: **Hugging Face streaming**, central **`configs/data_split.yaml`** / **`configs/eval_protocol.yaml`**, **MLflow** logging, and **pytest** for the submission contract.
+
+- **Setup:** [docs/SETUP_NEW_MACHINE.md](docs/SETUP_NEW_MACHINE.md)
+- **Splits & seeds:** [docs/SPLIT_CONFIGURATION.md](docs/SPLIT_CONFIGURATION.md)
+- **New models:** [docs/ADDING_A_MODEL.md](docs/ADDING_A_MODEL.md)
+- **Experiments / MLflow:** [docs/EXPERIMENTS_AND_MLFLOW.md](docs/EXPERIMENTS_AND_MLFLOW.md)
+- **Pre-PR checks:** [docs/SUBMISSION_CHECKLIST.md](docs/SUBMISSION_CHECKLIST.md)
+
+Quick start:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+export PYTHONPATH=.
+pytest -q
+python scripts/train.py --config configs/example_mlp.yaml --max-train-steps 5
+```
+
+Train/eval need HF access to `gram-competition/warped-ifw`; run `python scripts/inspect_dataset.py` after `huggingface-cli login` to confirm schema and set `id_key` in `configs/data_split.yaml`.
+
 ## Submission guidelines
 
 In order to participate in the competition, your team has to create a valid submission in the form of a **pull request** to this repository. The requirements for a valid submission are listed in the following.

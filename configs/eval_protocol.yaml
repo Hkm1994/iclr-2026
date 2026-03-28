@@ -1,0 +1,22 @@
+# Evaluation KPI definitions. Logged as MLflow param `eval_protocol_version`.
+version: "0.1.0"
+
+primary_kpi: val/l2_per_point_mean
+lower_is_better: true
+
+# Point subsampling during metric computation (full 100k if null).
+eval_subsample_N: null
+eval_point_subsample_seed: 12345
+
+aggregation: mean_over_batch
+
+metrics:
+  - log_key: train/mse_velocity
+    definition: mse_velocity
+    scope: velocity_out
+  - log_key: val/mse_velocity
+    definition: mse_velocity
+    scope: velocity_out
+  - log_key: val/l2_per_point_mean
+    definition: l2_per_point_mean
+    scope: velocity_out

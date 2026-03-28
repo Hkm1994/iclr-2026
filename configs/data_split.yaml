@@ -1,0 +1,35 @@
+# Central train / val / (optional) test membership + master seed.
+# Bump `version` when this file changes; it is logged as MLflow param `data_split_version`.
+version: "0.1.0"
+
+dataset:
+  repo_id: gram-competition/warped-ifw
+  revision: null  # pin a commit SHA string for full reproducibility
+
+# Unique sample id field in each HF row (set after `python scripts/inspect_dataset.py`).
+id_key: simulation_id
+
+# Master seed: torch / numpy / random (+ CUDA if available) in training scripts.
+seed: 42
+
+split:
+  # hf_native: use Hub split names below
+  # hash_ids: single HF split + deterministic assignment (see training/split_assign.py)
+  # explicit_lists: paths to id list files
+  mode: hash_ids
+  hf_native:
+    train_split: train
+    val_split: validation
+    test_split: null
+  hash_ids:
+    hf_split: train
+    val_fraction: 0.1
+    test_fraction: 0.05
+  explicit_lists:
+    hf_split: train
+    train_ids_path: null
+    val_ids_path: null
+    test_ids_path: null
+
+streaming:
+  shuffle_buffer_size: 10000
