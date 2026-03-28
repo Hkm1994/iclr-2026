@@ -5,9 +5,12 @@ version: "0.1.0"
 dataset:
   repo_id: gram-competition/warped-ifw
   revision: null  # pin a commit SHA string for full reproducibility
+  # auto: try Hugging Face Datasets table loader, then Hub-root .npz shards (warped-ifw).
+  # hub_table | npz: force one path (npz is one file per sample; no Hub split names).
+  layout: auto
 
-# Unique sample id field in each HF row (set after `python scripts/inspect_dataset.py`).
-id_key: simulation_id
+# Unique id per training row. warped-ifw .npz layout injects sample_id from the file path.
+id_key: sample_id
 
 # Master seed: torch / numpy / random (+ CUDA if available) in training scripts.
 seed: 42

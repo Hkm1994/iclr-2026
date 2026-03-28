@@ -11,6 +11,7 @@ import torch
 from datasets import load_dataset
 
 from training.explicit_ids import load_id_set
+from training.hf_npz_hub import hub_dataset_has_only_npz_error, iter_npz_root_samples
 from training.split_assign import assign_phase_hash_ids, get_sample_id
 from training.yaml_config import load_yaml
 
@@ -117,6 +118,24 @@ def _split_name_for_phase(ds_cfg: dict[str, Any], phase: SplitPhase) -> str:
     raise ValueError(f"Unknown mode {mode}")
 
 
+def _open_hf_table_stream(repo: str, split_name: str, rev: str | None):
+    kw: dict[str, Any] = {"streaming": True, "split": split_name}
+    if rev:
+        kw["revision"] = rev
+    return load_dataset(repo, **kw)
+
+
+def _npz_row_stream(
+    repo: str,
+    rev: str | None,
+    phase: SplitPhase,
+    master_seed: int,
+) -> Iterator[dict[str, Any]]:
+    shuffle = phase == "train"
+    rng = np.random.default_rng(master_seed + {"train": 11, "val": 13, "test": 17}[phase])
+    yield from iter_npz_root_samples(repo, revision=rev, shuffle=shuffle, rng=rng if shuffle else None)
+
+
 def build_stream(
     data_split_path: str | Path,
     phase: SplitPhase,
@@ -124,21 +143,39 @@ def build_stream(
     cfg = load_yaml(data_split_path)
     repo = cfg["dataset"]["repo_id"]
     rev = cfg["dataset"].get("revision") or None
+    layout = cfg["dataset"].get("layout", "auto")
     split_block = cfg["split"]
     mode = split_block["mode"]
     id_key = cfg["id_key"]
     master_seed = int(cfg["seed"])
 
-    def _open(split_name: str):
-        kw: dict[str, Any] = {"streaming": True, "split": split_name}
-        if rev:
-            kw["revision"] = rev
-        return load_dataset(repo, **kw)
+    def _resolve_row_iter(*, hf_split_name: str) -> Iterator[dict[str, Any]]:
+        if layout == "npz":
+            if mode == "hf_native":
+                raise ValueError(
+                    "split.mode hf_native is not supported for dataset.layout npz "
+                    "(Hub repo has no named splits; use hash_ids or explicit_lists)."
+                )
+            return _npz_row_stream(repo, rev, phase, master_seed)
+        if layout == "hub_table":
+            ds = _open_hf_table_stream(repo, hf_split_name, rev)
+            return iter(ds)
+
+        # auto: try Hub table loader, then .npz-at-root layout (warped-ifw).
+        if mode == "hf_native":
+            ds = _open_hf_table_stream(repo, hf_split_name, rev)
+            return iter(ds)
+        try:
+            ds = _open_hf_table_stream(repo, hf_split_name, rev)
+            return iter(ds)
+        except Exception as e:
+            if not hub_dataset_has_only_npz_error(e):
+                raise
+            return _npz_row_stream(repo, rev, phase, master_seed)
 
     if mode == "hf_native":
         name = _split_name_for_phase(cfg, phase)
-        ds = _open(name)
-        yield from ds
+        yield from _resolve_row_iter(hf_split_name=name)
         return
 
     if mode == "hash_ids":
@@ -147,12 +184,13 @@ def build_stream(
         hf_split = split_block["explicit_lists"]["hf_split"]
     else:
         raise ValueError(mode)
-    ds = _open(hf_split)
+
+    row_iter = _resolve_row_iter(hf_split_name=hf_split)
 
     if mode == "hash_ids":
         vf = float(split_block["hash_ids"]["val_fraction"])
         tf = float(split_block["hash_ids"]["test_fraction"])
-        for row in ds:
+        for row in row_iter:
             sid = get_sample_id(row, id_key)
             p = assign_phase_hash_ids(sid, master_seed, vf, tf)
             if p == phase:
@@ -166,7 +204,7 @@ def build_stream(
         test_ids = load_id_set(el.get("test_ids_path"))
         sets = {"train": train_ids, "val": val_ids, "test": test_ids}
         allowed = sets[phase]
-        for row in ds:
+        for row in row_iter:
             sid = get_sample_id(row, id_key)
             if sid in allowed:
                 yield row

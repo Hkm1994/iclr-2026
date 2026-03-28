@@ -5,10 +5,17 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from pprint import pprint
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import datasets
 from datasets import load_dataset
+
+from training.hf_npz_hub import hub_dataset_has_only_npz_error, load_first_npz_row
 
 
 def main() -> int:
@@ -25,22 +32,41 @@ def main() -> int:
             names = gsn(args.repo, revision=args.revision)
             print("Available split names:", names)
         except Exception as e:
-            print("Could not list split names:", e)
+            hint = ""
+            if hub_dataset_has_only_npz_error(e):
+                hint = " (This repo ships root-level .npz files; split names do not apply.)"
+            print("Could not list split names:", e, hint, sep="")
     else:
         print("get_dataset_split_names not available in this `datasets` version.")
 
+    row = None
     try:
         kw = {"split": args.split, "streaming": True}
         if args.revision:
             kw["revision"] = args.revision
         ds = load_dataset(args.repo, **kw)
+        row = next(iter(ds))
     except Exception as e:
-        print("Failed to load dataset:", e, file=sys.stderr)
-        print("Ensure: huggingface-cli login (or HF_TOKEN) and accept dataset terms on the Hub.", file=sys.stderr)
-        return 1
+        if hub_dataset_has_only_npz_error(e):
+            try:
+                row = load_first_npz_row(args.repo, revision=args.revision)
+                print("\n=== Layout ===", "Hub root .npz (loaded first shard alphabetically)")
+            except Exception as e2:
+                print("Failed to load .npz from Hub:", e2, file=sys.stderr)
+                print(
+                    "Ensure: hf auth (HF_TOKEN or huggingface-cli login) and accepted dataset terms.",
+                    file=sys.stderr,
+                )
+                return 1
+        else:
+            print("Failed to load dataset:", e, file=sys.stderr)
+            print(
+                "Ensure: hf auth (HF_TOKEN or huggingface-cli login) and accepted dataset terms.",
+                file=sys.stderr,
+            )
+            return 1
 
-    it = iter(ds)
-    row = next(it)
+    assert row is not None
     print("\n=== One example keys ===")
     pprint(list(row.keys()))
 
@@ -56,7 +82,7 @@ def main() -> int:
             print(f"  {k}: type={type(v).__name__} repr={repr(v)[:120]}")
 
     print("\n=== Suggested id_key for configs/data_split.yaml ===")
-    for cand in ("simulation_id", "id", "sample_id", "__index_level_0__"):
+    for cand in ("sample_id", "simulation_id", "id", "__index_level_0__"):
         if cand in row:
             print(f"  Found key {cand!r} -> set id_key: {cand}")
             break
