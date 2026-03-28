@@ -8,12 +8,14 @@ from torch.nn import Module
 
 from models.mlp.model import MLP
 from models.strong_mlp.model import StrongMLP
+from models.strong_mlp_knn.model import StrongMLPKnn
 from models.tiny_linear.model import TinyLinearBaseline
 
 MODELS: dict[str, Type[Module]] = {
     "tiny_linear": TinyLinearBaseline,
     "mlp": MLP,
     "strong_mlp": StrongMLP,
+    "strong_mlp_knn": StrongMLPKnn,
 }
 
 

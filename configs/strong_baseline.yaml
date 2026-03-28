@@ -28,6 +28,19 @@ train:
   #   pool_quantile: 0.5
   device: null
 
+  # Optional per-epoch LR schedule (see configs/strong_baseline_cosine.yaml for an example).
+  # lr_warmup_epochs: 0
+  # lr_schedule:
+  #   type: cosine
+  #   eta_min: 1.0e-6
+  #   t_max_epochs: 200
+  # lr_schedule:
+  #   type: plateau
+  #   mode: min
+  #   factor: 0.5
+  #   patience: 3
+  #   min_lr: 1.0e-7
+
   # After training: one full pass over the held-out test split (requires test_fraction > 0).
   eval_test_at_end: true
 

@@ -1,0 +1,35 @@
+# kNN-augmented strong MLP (v2); separate checkpoints from strong_mlp.
+experiment:
+  mlflow_experiment_name: gram-warped-ifw-strong
+
+paths:
+  data_split: configs/data_split.yaml
+  eval_protocol: configs/eval_protocol.yaml
+
+train:
+  model: strong_mlp_knn
+  model_family: strong_mlp_knn
+  lr: 0.0003
+  weight_decay: 0.01
+  batch_size: 1
+  grad_accum_steps: 1
+  train_subsample_N: 8192
+  train_point_seed: 0
+  device: null
+
+  eval_test_at_end: true
+  max_epochs: 200
+  min_epochs: 20
+  early_stopping_patience: 15
+  early_stopping_min_delta: 1.0e-5
+  early_stopping_monitor: val/l2_per_point_mean
+  early_stopping_lower_is_better: null
+
+  best_checkpoint_path: checkpoints/strong_mlp_knn_best.pt
+  last_checkpoint_path: checkpoints/strong_mlp_knn_last.pt
+  heartbeat_seconds: 180
+  verbose: true
+  log_every_n_train_batches: 100
+  log_every_n_val_batches: 100
+  max_train_steps: null
+  max_val_steps: null

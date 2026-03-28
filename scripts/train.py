@@ -28,6 +28,7 @@ from training.epoch_loop import (
     train_one_epoch,
     validate_full,
 )
+from training.lr_schedule import build_epoch_lr_scheduler, step_lr_scheduler
 from training.mlflow_steps import new_stream_counters
 from training.hf_dataset import streaming_batches
 from training.metrics import l2_per_point_mean, mse_velocity, subsample_points
@@ -263,6 +264,7 @@ def _run_epoch_training(
     best = float("inf") if lower_is_better else float("-inf")
     epochs_without_improve = 0
     stream_steps = new_stream_counters()
+    lr_sched, lr_sched_kind = build_epoch_lr_scheduler(opt, train_cfg, max_epochs)
 
     if verbose:
         print(
@@ -339,6 +341,13 @@ def _run_epoch_training(
                 )
 
         current = val_mse if metric_keys[monitor] == "mse" else val_l2
+
+        step_lr_scheduler(lr_sched, lr_sched_kind, monitor_value=current)
+        mlflow.log_metric(
+            "epoch/learning_rate",
+            float(opt.param_groups[0]["lr"]),
+            step=ep_step,
+        )
 
         if is_better(current, best, min_delta=min_delta, lower_is_better=lower_is_better):
             best = current
@@ -549,6 +558,12 @@ def main() -> int:
     ps = train_cfg.get("point_subsample")
     if ps:
         params["point_subsample"] = repr(ps)
+    wu = train_cfg.get("lr_warmup_epochs")
+    if wu is not None:
+        params["lr_warmup_epochs"] = int(wu)
+    ls = train_cfg.get("lr_schedule")
+    if ls:
+        params["lr_schedule"] = repr(ls)
 
     mlflow_run_name = make_mlflow_run_name(model_name, train_cfg, exp_cfg)
     params["mlflow_run_name"] = mlflow_run_name
