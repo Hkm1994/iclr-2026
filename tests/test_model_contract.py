@@ -31,8 +31,23 @@ def test_mlp_submission_no_arg_loads_weights_if_present():
     assert o.shape == (1, 5, 32, 3)
 
 
-def test_backward_smoke_mlp(small_batch_tensors):
-    model = MLP(config={"skip_weights": True})
+def test_tiny_linear_submission_no_args_forward():
+    m = MODELS["tiny_linear"]()
+    t, pos, idcs, vi = (
+        torch.randn(1, 10),
+        torch.randn(1, 32, 3),
+        [torch.arange(5)],
+        torch.randn(1, 5, 32, 3),
+    )
+    with torch.no_grad():
+        o = m(t, pos, idcs, vi)
+    assert o.shape == (1, 5, 32, 3)
+
+
+@pytest.mark.parametrize("name", list(MODELS.keys()))
+def test_backward_smoke(name, small_batch_tensors):
+    cls = MODELS[name]
+    model = cls(config={"skip_weights": True})
     t, pos, idcs_airfoil, velocity_in = small_batch_tensors
     pred = model(t, pos, idcs_airfoil, velocity_in)
     pred.mean().backward()
