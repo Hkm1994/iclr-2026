@@ -324,8 +324,9 @@ def _run_epoch_training(
             release_training_memory()
             break
 
-        # Epoch-level metrics use the zero-based epoch index (independent of batch counters).
-        ep_step = epoch
+        # Use val stream step so epoch summaries share MLflow's x-axis with stream/val_*.
+        ep_step = stream_steps.val_batch[0]
+        mlflow.log_metric("epoch/epoch_index", float(epoch), step=ep_step)
         mlflow.log_metric("epoch/train_mean_mse", train_loss, step=ep_step)
         mlflow.log_metric("epoch/train_batches", float(n_tr), step=ep_step)
         mlflow.log_metric("epoch/val_mse", val_mse, step=ep_step)
@@ -357,11 +358,11 @@ def _run_epoch_training(
             best = current
             epochs_without_improve = 0
             save_state_dict_atomic(best_ckpt_path, model)
-            mlflow.log_metric(
-                "val/best_" + monitor.replace("/", "_"), best, step=ep_step
-            )
         else:
             epochs_without_improve += 1
+        mlflow.log_metric(
+            "val/best_" + monitor.replace("/", "_"), best, step=ep_step
+        )
 
         if verbose:
             imp = "improved" if epochs_without_improve == 0 else f"no_improve_{epochs_without_improve}"
