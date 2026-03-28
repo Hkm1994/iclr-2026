@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,10 @@ from training.epoch_loop import is_better, train_one_epoch, validate_full
 from training.hf_dataset import streaming_batches
 from training.metrics import l2_per_point_mean, mse_velocity, subsample_points
 from training.seeds import seed_all
+from training.train_checkpointing import (
+    register_interrupt_checkpoint,
+    save_state_dict_atomic,
+)
 from training.yaml_config import load_yaml
 
 
@@ -63,6 +68,8 @@ def _run_legacy_step_training(
     verbose: bool,
     log_every_n_train_batches: int | None,
     log_mlflow_train_every_n: int | None,
+    last_ckpt_path: Path,
+    heartbeat_seconds: float | None,
 ) -> None:
     step = 0
     accum = 0
@@ -70,6 +77,7 @@ def _run_legacy_step_training(
     mlflow_train = log_mlflow_train_every_n
     if mlflow_train is None:
         mlflow_train = 1
+    hb_last = time.monotonic()
 
     if verbose:
         print(
@@ -108,6 +116,15 @@ def _run_legacy_step_training(
                     flush=True,
                 )
         step += 1
+        if heartbeat_seconds is not None and heartbeat_seconds > 0:
+            now = time.monotonic()
+            if now - hb_last >= heartbeat_seconds:
+                if verbose:
+                    print(
+                        f"  [heartbeat] legacy train step {step} mse={loss_f:.6f} (still running…)",
+                        flush=True,
+                    )
+                hb_last = now
         if step >= max_train:
             break
 
@@ -124,6 +141,7 @@ def _run_legacy_step_training(
     val_mse_acc = 0.0
     val_l2_acc = 0.0
     val_count = 0
+    hb_last = time.monotonic()
     val_it = streaming_batches(
         data_split_path,
         "val",
@@ -153,6 +171,15 @@ def _run_legacy_step_training(
                     f"l2={float(vl.cpu()):.6f}",
                     flush=True,
                 )
+            if heartbeat_seconds is not None and heartbeat_seconds > 0:
+                now = time.monotonic()
+                if now - hb_last >= heartbeat_seconds:
+                    if verbose:
+                        print(
+                            f"  [heartbeat] legacy val batch {val_count} (still running…)",
+                            flush=True,
+                        )
+                    hb_last = now
             if val_step >= max_val:
                 break
 
@@ -165,6 +192,7 @@ def _run_legacy_step_training(
                 f"mean l2={val_l2_acc / val_count:.6f}",
                 flush=True,
             )
+    save_state_dict_atomic(last_ckpt_path, model)
 
 
 def _run_epoch_training(
@@ -191,6 +219,8 @@ def _run_epoch_training(
     verbose: bool,
     log_every_n_train_batches: int | None,
     log_every_n_val_batches: int | None,
+    last_ckpt_path: Path,
+    heartbeat_seconds: float | None,
 ) -> None:
     metric_keys = {
         "val/mse_velocity": "mse",
@@ -230,6 +260,7 @@ def _run_epoch_training(
             epoch_idx=epoch,
             log_every_n_batches=log_every_n_train_batches,
             verbose=verbose,
+            heartbeat_seconds=heartbeat_seconds,
         )
         if verbose:
             print(
@@ -246,9 +277,11 @@ def _run_epoch_training(
             epoch_idx=epoch,
             log_every_n_batches=log_every_n_val_batches,
             verbose=verbose,
+            heartbeat_seconds=heartbeat_seconds,
         )
         if n_val == 0:
             print("Validation produced zero batches; check data_split and HF access.")
+            save_state_dict_atomic(last_ckpt_path, model)
             break
 
         mlflow.log_metric("train/mse_velocity_epoch_mean", train_loss, step=epoch)
@@ -262,8 +295,7 @@ def _run_epoch_training(
         if is_better(current, best, min_delta=min_delta, lower_is_better=lower_is_better):
             best = current
             epochs_without_improve = 0
-            best_ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), best_ckpt_path)
+            save_state_dict_atomic(best_ckpt_path, model)
             mlflow.log_metric("val/best_" + monitor.replace("/", "_"), best, step=epoch)
         else:
             epochs_without_improve += 1
@@ -276,6 +308,8 @@ def _run_epoch_training(
                 f"best_{monitor}={best:.6f} ({imp}) | batches train/val={n_tr}/{n_val} ---\n",
                 flush=True,
             )
+
+        save_state_dict_atomic(last_ckpt_path, model)
 
         if epoch + 1 >= min_epochs and epochs_without_improve >= patience:
             mlflow.log_param("stopped_epoch", epoch + 1)
@@ -364,6 +398,17 @@ def main() -> int:
         train_cfg.get("log_mlflow_train_every_n_steps", 1)
     )
 
+    last_ckpt = Path(
+        train_cfg.get("last_checkpoint_path") or f"checkpoints/{model_name}_last.pt"
+    )
+    hb_raw = train_cfg.get("heartbeat_seconds")
+    if hb_raw is None:
+        heartbeat_seconds: float | None = None
+    else:
+        heartbeat_seconds = float(hb_raw)
+        if heartbeat_seconds <= 0:
+            heartbeat_seconds = None
+
     mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "file:./mlruns"))
     mlflow.set_experiment(exp_cfg.get("mlflow_experiment_name", "gram-warped-ifw"))
 
@@ -406,97 +451,131 @@ def main() -> int:
     params["verbose_terminal"] = verbose
     params["log_every_n_train_batches"] = log_every_train or "off"
     params["log_every_n_val_batches"] = log_every_val or "off"
+    params["last_checkpoint_path"] = str(last_ckpt)
+    params["heartbeat_seconds"] = (
+        heartbeat_seconds if heartbeat_seconds is not None else "off"
+    )
     if not use_epochs:
         params["log_mlflow_train_every_n_steps"] = log_mlflow_train_every or "off"
 
-    with mlflow.start_run():
-        mlflow.log_params(params)
-        mlflow.log_artifact(str(cfg_path), artifact_path="config")
+    restore_sig = register_interrupt_checkpoint(model, last_ckpt, verbose=verbose)
+    try:
+        with mlflow.start_run():
+            mlflow.log_params(params)
+            mlflow.log_artifact(str(cfg_path), artifact_path="config")
 
-        if verbose:
-            print(
-                f"MLflow experiment={exp_cfg.get('mlflow_experiment_name', 'gram-warped-ifw')} "
-                f"tracking_uri={os.environ.get('MLFLOW_TRACKING_URI', 'file:./mlruns')}",
-                flush=True,
-            )
-            print(
-                f"Model={model_name} device={device} | data_split={data_split_path} | "
-                f"eval_protocol={eval_path}",
-                flush=True,
-            )
-            if use_epochs:
+            if verbose:
                 print(
-                    f"Logging: train batch metrics every {log_every_train or 'never'} batches, "
-                    f"val every {log_every_val or 'never'} batches.",
+                    f"MLflow experiment={exp_cfg.get('mlflow_experiment_name', 'gram-warped-ifw')} "
+                    f"tracking_uri={os.environ.get('MLFLOW_TRACKING_URI', 'file:./mlruns')}",
                     flush=True,
                 )
-            else:
                 print(
-                    f"Logging: terminal every {log_every_train or 'never'} steps; "
-                    f"MLflow train metric every {log_mlflow_train_every or 'never'} steps.",
+                    f"Model={model_name} device={device} | data_split={data_split_path} | "
+                    f"eval_protocol={eval_path}",
+                    flush=True,
+                )
+                if use_epochs:
+                    print(
+                        f"Logging: train batch metrics every {log_every_train or 'never'} batches, "
+                        f"val every {log_every_val or 'never'} batches.",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"Logging: terminal every {log_every_train or 'never'} steps; "
+                        f"MLflow train metric every {log_mlflow_train_every or 'never'} steps.",
+                        flush=True,
+                    )
+                print(
+                    f"Checkpoints: last={last_ckpt} (every epoch end + on interrupt/error); "
+                    f"best=see config best_checkpoint_path (epoch mode). "
+                    f"Heartbeat: {heartbeat_seconds or 'off'} s.",
                     flush=True,
                 )
 
-        try:
-            if use_epochs:
-                ck = train_cfg.get("best_checkpoint_path")
-                if ck is None:
-                    ck = f"checkpoints/{model_name}_best.pt"
-                _run_epoch_training(
-                    model=model,
-                    opt=opt,
-                    data_split_path=data_split_path,
-                    device=device,
-                    train_cfg=train_cfg,
-                    ev_cfg=ev_cfg,
-                    grad_accum=grad_accum,
-                    batch_size=batch_size,
-                    train_sub=train_sub,
-                    point_seed_train=point_seed_train,
-                    eval_seed=eval_seed,
-                    eval_sub=eval_sub,
-                    max_epochs=int(max_epochs),
-                    min_epochs=int(train_cfg.get("min_epochs", 1)),
-                    patience=int(train_cfg.get("early_stopping_patience", 10)),
-                    min_delta=float(train_cfg.get("early_stopping_min_delta", 0.0)),
-                    monitor=monitor,
-                    lower_is_better=bool(lower),
-                    best_ckpt_path=Path(ck),
-                    verbose=verbose,
-                    log_every_n_train_batches=log_every_train,
-                    log_every_n_val_batches=log_every_val,
+            try:
+                if use_epochs:
+                    ck = train_cfg.get("best_checkpoint_path")
+                    if ck is None:
+                        ck = f"checkpoints/{model_name}_best.pt"
+                    _run_epoch_training(
+                        model=model,
+                        opt=opt,
+                        data_split_path=data_split_path,
+                        device=device,
+                        train_cfg=train_cfg,
+                        ev_cfg=ev_cfg,
+                        grad_accum=grad_accum,
+                        batch_size=batch_size,
+                        train_sub=train_sub,
+                        point_seed_train=point_seed_train,
+                        eval_seed=eval_seed,
+                        eval_sub=eval_sub,
+                        max_epochs=int(max_epochs),
+                        min_epochs=int(train_cfg.get("min_epochs", 1)),
+                        patience=int(train_cfg.get("early_stopping_patience", 10)),
+                        min_delta=float(train_cfg.get("early_stopping_min_delta", 0.0)),
+                        monitor=monitor,
+                        lower_is_better=bool(lower),
+                        best_ckpt_path=Path(ck),
+                        verbose=verbose,
+                        log_every_n_train_batches=log_every_train,
+                        log_every_n_val_batches=log_every_val,
+                        last_ckpt_path=last_ckpt,
+                        heartbeat_seconds=heartbeat_seconds,
+                    )
+                else:
+                    max_train = args.max_train_steps or int(
+                        train_cfg.get("max_train_steps", 100)
+                    )
+                    max_val = int(train_cfg.get("max_val_steps", 10))
+                    _run_legacy_step_training(
+                        model=model,
+                        opt=opt,
+                        data_split_path=data_split_path,
+                        device=device,
+                        train_cfg=train_cfg,
+                        ev_cfg=ev_cfg,
+                        max_train=max_train,
+                        max_val=max_val,
+                        grad_accum=grad_accum,
+                        batch_size=batch_size,
+                        train_sub=train_sub,
+                        point_seed_train=point_seed_train,
+                        eval_seed=eval_seed,
+                        eval_sub=eval_sub,
+                        verbose=verbose,
+                        log_every_n_train_batches=log_every_train,
+                        log_mlflow_train_every_n=log_mlflow_train_every,
+                        last_ckpt_path=last_ckpt,
+                        heartbeat_seconds=heartbeat_seconds,
+                    )
+            except KeyboardInterrupt:
+                save_state_dict_atomic(last_ckpt, model)
+                if verbose:
+                    print(
+                        f"[checkpoint] Saved to {last_ckpt} (KeyboardInterrupt)\n",
+                        flush=True,
+                    )
+                raise
+            except Exception as e:
+                save_state_dict_atomic(last_ckpt, model)
+                if verbose:
+                    print(
+                        f"[checkpoint] Saved to {last_ckpt} after error.\n",
+                        flush=True,
+                    )
+                print("Training failed:", e)
+                print(
+                    "Check HF_TOKEN / huggingface-cli login and configs/data_split.yaml id_key."
                 )
-            else:
-                max_train = args.max_train_steps or int(
-                    train_cfg.get("max_train_steps", 100)
-                )
-                max_val = int(train_cfg.get("max_val_steps", 10))
-                _run_legacy_step_training(
-                    model=model,
-                    opt=opt,
-                    data_split_path=data_split_path,
-                    device=device,
-                    train_cfg=train_cfg,
-                    ev_cfg=ev_cfg,
-                    max_train=max_train,
-                    max_val=max_val,
-                    grad_accum=grad_accum,
-                    batch_size=batch_size,
-                    train_sub=train_sub,
-                    point_seed_train=point_seed_train,
-                    eval_seed=eval_seed,
-                    eval_sub=eval_sub,
-                    verbose=verbose,
-                    log_every_n_train_batches=log_every_train,
-                    log_mlflow_train_every_n=log_mlflow_train_every,
-                )
-        except Exception as e:
-            print("Training failed:", e)
-            print("Check HF_TOKEN / huggingface-cli login and configs/data_split.yaml id_key.")
-            return 1
+                return 1
 
-    print("Done. MLflow UI: mlflow ui --backend-store-uri ./mlruns")
-    return 0
+            print("Done. MLflow UI: mlflow ui --backend-store-uri ./mlruns")
+            return 0
+    finally:
+        restore_sig()
 
 
 if __name__ == "__main__":

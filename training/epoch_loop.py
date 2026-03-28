@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import mlflow
@@ -33,6 +34,7 @@ def train_one_epoch(
     epoch_idx: int = 0,
     log_every_n_batches: int | None = 5,
     verbose: bool = True,
+    heartbeat_seconds: float | None = None,
 ) -> tuple[float, int]:
     """One full pass over the train split. Returns (mean batch MSE, num_batches)."""
     model.train()
@@ -40,6 +42,7 @@ def train_one_epoch(
     accum = 0
     loss_sum = 0.0
     n_batches = 0
+    hb_last = time.monotonic()
     it = streaming_batches(
         data_split_path,
         "train",
@@ -80,6 +83,17 @@ def train_one_epoch(
                     flush=True,
                 )
 
+        if heartbeat_seconds is not None and heartbeat_seconds > 0:
+            now = time.monotonic()
+            if now - hb_last >= heartbeat_seconds:
+                if verbose:
+                    print(
+                        f"  [heartbeat] train epoch {epoch_idx + 1} | batch {n_batches} | "
+                        f"last_mse={float(loss.detach().cpu()):.6f} (still running…)",
+                        flush=True,
+                    )
+                hb_last = now
+
     if accum > 0:
         opt.step()
         opt.zero_grad(set_to_none=True)
@@ -106,6 +120,7 @@ def validate_full(
     epoch_idx: int = 0,
     log_every_n_batches: int | None = 5,
     verbose: bool = True,
+    heartbeat_seconds: float | None = None,
 ) -> tuple[float, float, int]:
     """Full pass over val split. Returns (mean MSE, mean L2, num_batches)."""
     model.eval()
@@ -114,6 +129,7 @@ def validate_full(
     mse_acc = 0.0
     l2_acc = 0.0
     n = 0
+    hb_last = time.monotonic()
     it = streaming_batches(
         data_split_path,
         "val",
@@ -153,6 +169,17 @@ def validate_full(
                     f"running_mean_mse={mse_acc / n:.6f} running_mean_l2={l2_acc / n:.6f}",
                     flush=True,
                 )
+
+        if heartbeat_seconds is not None and heartbeat_seconds > 0:
+            now = time.monotonic()
+            if now - hb_last >= heartbeat_seconds:
+                if verbose:
+                    print(
+                        f"  [heartbeat] val epoch {epoch_idx + 1} | batch {n} | "
+                        f"running_mean_l2={l2_acc / n:.6f} (still running…)",
+                        flush=True,
+                    )
+                hb_last = now
 
     mean_mse = mse_acc / max(n, 1)
     mean_l2 = l2_acc / max(n, 1)

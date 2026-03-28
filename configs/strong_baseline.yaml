@@ -27,6 +27,9 @@ train:
   early_stopping_lower_is_better: null
 
   best_checkpoint_path: checkpoints/strong_mlp_best.pt
+  last_checkpoint_path: checkpoints/strong_mlp_last.pt
+  # Wall-clock heartbeat if no batch logs for this long (download / huge step); null to disable.
+  heartbeat_seconds: 180
 
   # Terminal + MLflow: batch-level metrics during each train/val pass (set 0 or null to disable).
   verbose: true

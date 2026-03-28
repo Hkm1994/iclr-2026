@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -45,11 +46,13 @@ def npz_row_from_hub_file(
     *,
     revision: str | None = None,
 ) -> dict[str, Any]:
+    etag_timeout = float(os.environ.get("HF_HUB_ETAG_TIMEOUT", "60"))
     path = hf_hub_download(
         repo_id,
         rel_path,
         repo_type="dataset",
         revision=revision,
+        etag_timeout=etag_timeout,
     )
     row = row_from_npz_path(path)
     row["sample_id"] = sample_id_from_dataset_relpath(rel_path)
