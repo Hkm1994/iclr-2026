@@ -457,7 +457,11 @@ def main() -> int:
     model_name = train_cfg["model"]
     model_cls = get_model_class(model_name)
 
-    model_cfg = {"skip_weights": True}
+    model_cfg: dict = {"skip_weights": True}
+    extra_mc = train_cfg.get("model_config")
+    if isinstance(extra_mc, dict):
+        model_cfg.update(extra_mc)
+    model_cfg["skip_weights"] = True
     if train_cfg.get("checkpoint_path"):
         model = model_cls(config=model_cfg)
         ck = torch.load(train_cfg["checkpoint_path"], map_location="cpu", weights_only=True)

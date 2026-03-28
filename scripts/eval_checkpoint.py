@@ -92,7 +92,12 @@ def main() -> int:
     device = _device_from_cfg(train_cfg)
     model_name = train_cfg["model"]
     model_cls = get_model_class(model_name)
-    model = model_cls(config={"skip_weights": True})
+    model_cfg: dict = {"skip_weights": True}
+    extra_mc = train_cfg.get("model_config")
+    if isinstance(extra_mc, dict):
+        model_cfg.update(extra_mc)
+    model_cfg["skip_weights"] = True
+    model = model_cls(config=model_cfg)
     state = torch.load(ckpt_path, map_location="cpu", weights_only=True)
     model.load_state_dict(state)
     model = model.to(device)
