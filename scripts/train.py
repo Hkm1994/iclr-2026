@@ -31,6 +31,15 @@ def _device_from_cfg(train_cfg: dict) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _positive_int_or_none(x) -> int | None:
+    if x is None:
+        return None
+    n = int(x)
+    if n <= 0:
+        return None
+    return n
+
+
 def _run_legacy_step_training(
     *,
     model,
@@ -47,10 +56,23 @@ def _run_legacy_step_training(
     point_seed_train: int,
     eval_seed: int,
     eval_sub,
+    verbose: bool,
+    log_every_n_train_batches: int | None,
+    log_mlflow_train_every_n: int | None,
 ) -> None:
     step = 0
     accum = 0
     opt.zero_grad(set_to_none=True)
+    mlflow_train = log_mlflow_train_every_n
+    if mlflow_train is None:
+        mlflow_train = 1
+
+    if verbose:
+        print(
+            f"[legacy train] max_train_steps={max_train} batch_size={batch_size} "
+            f"train_subsample_N={train_sub!s}",
+            flush=True,
+        )
 
     train_it = streaming_batches(
         data_split_path,
@@ -71,7 +93,16 @@ def _run_legacy_step_training(
             opt.step()
             opt.zero_grad(set_to_none=True)
             accum = 0
-        mlflow.log_metric("train/mse_velocity", float(loss.detach().cpu()), step=step)
+        loss_f = float(loss.detach().cpu())
+        if step == 0 or (step + 1) % mlflow_train == 0:
+            mlflow.log_metric("train/mse_velocity", loss_f, step=step)
+        if verbose and log_every_n_train_batches is not None:
+            if step == 0 or (step + 1) % log_every_n_train_batches == 0:
+                print(
+                    f"  [train] step {step + 1}/{max_train} mse={loss_f:.6f} "
+                    f"points={batch.pos.shape[1]}",
+                    flush=True,
+                )
         step += 1
         if step >= max_train:
             break
@@ -79,6 +110,9 @@ def _run_legacy_step_training(
     if accum > 0:
         opt.step()
         opt.zero_grad(set_to_none=True)
+
+    if verbose:
+        print(f"[legacy train] finished {step} optimizer steps", flush=True)
 
     g = torch.Generator()
     g.manual_seed(eval_seed)
@@ -95,6 +129,8 @@ def _run_legacy_step_training(
         point_seed=eval_seed,
         max_batches=max_val,
     )
+    if verbose:
+        print(f"[legacy val] max_val_steps={max_val}", flush=True)
     with torch.no_grad():
         for batch in val_it:
             pred = model(batch.t, batch.pos, batch.idcs_airfoil, batch.velocity_in)
@@ -105,12 +141,26 @@ def _run_legacy_step_training(
             val_l2_acc += float(vl.cpu())
             val_count += 1
             val_step += 1
+            if verbose and log_every_n_train_batches and (
+                val_count == 1 or val_count % log_every_n_train_batches == 0
+            ):
+                print(
+                    f"  [val] batch {val_count}/{max_val} mse={float(vm.cpu()):.6f} "
+                    f"l2={float(vl.cpu()):.6f}",
+                    flush=True,
+                )
             if val_step >= max_val:
                 break
 
     if val_count > 0:
         mlflow.log_metric("val/mse_velocity", val_mse_acc / val_count)
         mlflow.log_metric("val/l2_per_point_mean", val_l2_acc / val_count)
+        if verbose:
+            print(
+                f"[legacy val] mean mse={val_mse_acc / val_count:.6f} "
+                f"mean l2={val_l2_acc / val_count:.6f}",
+                flush=True,
+            )
 
 
 def _run_epoch_training(
@@ -134,6 +184,9 @@ def _run_epoch_training(
     monitor: str,
     lower_is_better: bool,
     best_ckpt_path: Path,
+    verbose: bool,
+    log_every_n_train_batches: int | None,
+    log_every_n_val_batches: int | None,
 ) -> None:
     metric_keys = {
         "val/mse_velocity": "mse",
@@ -147,8 +200,20 @@ def _run_epoch_training(
     best = float("inf") if lower_is_better else float("-inf")
     epochs_without_improve = 0
 
+    if verbose:
+        print(
+            f"\n=== Epoch training: max_epochs={max_epochs} min_epochs={min_epochs} "
+            f"patience={patience} monitor={monitor} ===\n",
+            flush=True,
+        )
+
     for epoch in range(max_epochs):
         seed_ep = int(point_seed_train) + epoch * 1_000_003
+        if verbose:
+            print(
+                f"\n--- Epoch {epoch + 1}/{max_epochs} | train (seed_ep={seed_ep}) ---",
+                flush=True,
+            )
         train_loss, n_tr = train_one_epoch(
             model=model,
             opt=opt,
@@ -158,7 +223,15 @@ def _run_epoch_training(
             grad_accum=grad_accum,
             train_subsample_N=train_sub,
             point_seed=seed_ep,
+            epoch_idx=epoch,
+            log_every_n_batches=log_every_n_train_batches,
+            verbose=verbose,
         )
+        if verbose:
+            print(
+                f"--- Epoch {epoch + 1}/{max_epochs} | validation ---",
+                flush=True,
+            )
         val_mse, val_l2, n_val = validate_full(
             model=model,
             data_split_path=data_split_path,
@@ -166,6 +239,9 @@ def _run_epoch_training(
             batch_size=batch_size,
             eval_subsample_N=eval_sub,
             eval_seed=eval_seed,
+            epoch_idx=epoch,
+            log_every_n_batches=log_every_n_val_batches,
+            verbose=verbose,
         )
         if n_val == 0:
             print("Validation produced zero batches; check data_split and HF access.")
@@ -188,13 +264,30 @@ def _run_epoch_training(
         else:
             epochs_without_improve += 1
 
+        if verbose:
+            imp = "improved" if epochs_without_improve == 0 else f"no_improve_{epochs_without_improve}"
+            print(
+                f"--- Epoch {epoch + 1} summary | train_mean_mse={train_loss:.6f} "
+                f"val_mse={val_mse:.6f} val_l2={val_l2:.6f} | "
+                f"best_{monitor}={best:.6f} ({imp}) | batches train/val={n_tr}/{n_val} ---\n",
+                flush=True,
+            )
+
         if epoch + 1 >= min_epochs and epochs_without_improve >= patience:
             mlflow.log_param("stopped_epoch", epoch + 1)
             mlflow.log_param("stop_reason", "early_stopping")
+            if verbose:
+                print(
+                    f"Early stopping: no improvement for {patience} epochs "
+                    f"(after min_epochs={min_epochs}).",
+                    flush=True,
+                )
             break
     else:
         mlflow.log_param("stopped_epoch", max_epochs)
         mlflow.log_param("stop_reason", "max_epochs")
+        if verbose:
+            print(f"Stopped: reached max_epochs={max_epochs}.", flush=True)
 
     mlflow.log_param("best_" + monitor.replace("/", "_"), best)
     if best_ckpt_path.is_file():
@@ -205,6 +298,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=str, default="configs/example_mlp.yaml")
     ap.add_argument("--max-train-steps", type=int, default=None)
+    ap.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Disable verbose terminal progress (MLflow batch metrics still logged unless disabled in YAML).",
+    )
     args = ap.parse_args()
 
     cfg_path = Path(args.config)
@@ -248,6 +346,20 @@ def main() -> int:
     max_epochs = train_cfg.get("max_epochs")
     use_epochs = max_epochs is not None
 
+    verbose = bool(train_cfg.get("verbose", True)) and not args.quiet
+    log_every_train = _positive_int_or_none(
+        train_cfg.get("log_every_n_train_batches", 5)
+    )
+    log_every_val = _positive_int_or_none(
+        train_cfg.get(
+            "log_every_n_val_batches",
+            train_cfg.get("log_every_n_train_batches", 5),
+        )
+    )
+    log_mlflow_train_every = _positive_int_or_none(
+        train_cfg.get("log_mlflow_train_every_n_steps", 1)
+    )
+
     mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "file:./mlruns"))
     mlflow.set_experiment(exp_cfg.get("mlflow_experiment_name", "gram-warped-ifw"))
 
@@ -287,10 +399,39 @@ def main() -> int:
                 "early_stopping_lower_is_better": lower,
             }
         )
+    params["verbose_terminal"] = verbose
+    params["log_every_n_train_batches"] = log_every_train or "off"
+    params["log_every_n_val_batches"] = log_every_val or "off"
+    if not use_epochs:
+        params["log_mlflow_train_every_n_steps"] = log_mlflow_train_every or "off"
 
     with mlflow.start_run():
         mlflow.log_params(params)
         mlflow.log_artifact(str(cfg_path), artifact_path="config")
+
+        if verbose:
+            print(
+                f"MLflow experiment={exp_cfg.get('mlflow_experiment_name', 'gram-warped-ifw')} "
+                f"tracking_uri={os.environ.get('MLFLOW_TRACKING_URI', 'file:./mlruns')}",
+                flush=True,
+            )
+            print(
+                f"Model={model_name} device={device} | data_split={data_split_path} | "
+                f"eval_protocol={eval_path}",
+                flush=True,
+            )
+            if use_epochs:
+                print(
+                    f"Logging: train batch metrics every {log_every_train or 'never'} batches, "
+                    f"val every {log_every_val or 'never'} batches.",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"Logging: terminal every {log_every_train or 'never'} steps; "
+                    f"MLflow train metric every {log_mlflow_train_every or 'never'} steps.",
+                    flush=True,
+                )
 
         try:
             if use_epochs:
@@ -317,6 +458,9 @@ def main() -> int:
                     monitor=monitor,
                     lower_is_better=bool(lower),
                     best_ckpt_path=Path(ck),
+                    verbose=verbose,
+                    log_every_n_train_batches=log_every_train,
+                    log_every_n_val_batches=log_every_val,
                 )
             else:
                 max_train = args.max_train_steps or int(
@@ -338,6 +482,9 @@ def main() -> int:
                     point_seed_train=point_seed_train,
                     eval_seed=eval_seed,
                     eval_sub=eval_sub,
+                    verbose=verbose,
+                    log_every_n_train_batches=log_every_train,
+                    log_mlflow_train_every_n=log_mlflow_train_every,
                 )
         except Exception as e:
             print("Training failed:", e)
