@@ -13,9 +13,13 @@ train:
   weight_decay: 0.01
   batch_size: 1
   grad_accum_steps: 1
-  train_subsample_N: 8192
+  # null = all ~100k points per sample (heavy on GPU memory).
+  train_subsample_N: null
   train_point_seed: 0
   device: null
+
+  # After training: one full pass over the held-out test split (requires test_fraction > 0).
+  eval_test_at_end: true
 
   # Full passes over hash_ids train / val partitions (see data_split.yaml).
   max_epochs: 200

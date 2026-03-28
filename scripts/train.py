@@ -22,7 +22,12 @@ import torch
 from torch.optim import AdamW
 
 from models.registry import get_model_class
-from training.epoch_loop import is_better, train_one_epoch, validate_full
+from training.epoch_loop import (
+    evaluate_split_full,
+    is_better,
+    train_one_epoch,
+    validate_full,
+)
 from training.hf_dataset import streaming_batches
 from training.metrics import l2_per_point_mean, mse_velocity, subsample_points
 from training.seeds import seed_all
@@ -222,6 +227,7 @@ def _run_epoch_training(
     log_every_n_val_batches: int | None,
     last_ckpt_path: Path,
     heartbeat_seconds: float | None,
+    eval_test_at_end: bool,
 ) -> None:
     metric_keys = {
         "val/mse_velocity": "mse",
@@ -234,6 +240,7 @@ def _run_epoch_training(
 
     best = float("inf") if lower_is_better else float("-inf")
     epochs_without_improve = 0
+    global_step_counter = [0]
 
     if verbose:
         print(
@@ -262,6 +269,7 @@ def _run_epoch_training(
             log_every_n_batches=log_every_n_train_batches,
             verbose=verbose,
             heartbeat_seconds=heartbeat_seconds,
+            global_step_counter=global_step_counter,
         )
         if verbose:
             print(
@@ -279,17 +287,23 @@ def _run_epoch_training(
             log_every_n_batches=log_every_n_val_batches,
             verbose=verbose,
             heartbeat_seconds=heartbeat_seconds,
+            global_step_counter=global_step_counter,
         )
         if n_val == 0:
             print("Validation produced zero batches; check data_split and HF access.")
             save_state_dict_atomic(last_ckpt_path, model)
             break
 
-        mlflow.log_metric("train/mse_velocity_epoch_mean", train_loss, step=epoch)
-        mlflow.log_metric("train/batches_per_epoch", float(n_tr), step=epoch)
-        mlflow.log_metric("val/mse_velocity", val_mse, step=epoch)
-        mlflow.log_metric("val/l2_per_point_mean", val_l2, step=epoch)
-        mlflow.log_metric("val/batches_per_epoch", float(n_val), step=epoch)
+        ep_step = global_step_counter[0]
+        mlflow.log_metric("epoch/train_mean_mse", train_loss, step=ep_step)
+        mlflow.log_metric("epoch/train_batches", float(n_tr), step=ep_step)
+        mlflow.log_metric("epoch/val_mse", val_mse, step=ep_step)
+        mlflow.log_metric("epoch/val_l2", val_l2, step=ep_step)
+        mlflow.log_metric("epoch/val_batches", float(n_val), step=ep_step)
+        # Stable names for reporting / primary_kpi (same value as epoch/val_* at this step).
+        mlflow.log_metric("train/mse_velocity_epoch_mean", train_loss, step=ep_step)
+        mlflow.log_metric("val/mse_velocity", val_mse, step=ep_step)
+        mlflow.log_metric("val/l2_per_point_mean", val_l2, step=ep_step)
 
         current = val_mse if metric_keys[monitor] == "mse" else val_l2
 
@@ -297,7 +311,9 @@ def _run_epoch_training(
             best = current
             epochs_without_improve = 0
             save_state_dict_atomic(best_ckpt_path, model)
-            mlflow.log_metric("val/best_" + monitor.replace("/", "_"), best, step=epoch)
+            mlflow.log_metric(
+                "val/best_" + monitor.replace("/", "_"), best, step=ep_step
+            )
         else:
             epochs_without_improve += 1
 
@@ -327,6 +343,41 @@ def _run_epoch_training(
         mlflow.log_param("stop_reason", "max_epochs")
         if verbose:
             print(f"Stopped: reached max_epochs={max_epochs}.", flush=True)
+
+    if eval_test_at_end:
+        if verbose:
+            print("\n=== Final pass: held-out test split (all test shards) ===", flush=True)
+        test_mse, test_l2, n_te = evaluate_split_full(
+            model=model,
+            data_split_path=data_split_path,
+            device=device,
+            batch_size=batch_size,
+            eval_subsample_N=eval_sub,
+            eval_seed=eval_seed,
+            phase="test",
+            epoch_idx=0,
+            log_every_n_batches=log_every_n_val_batches,
+            verbose=verbose,
+            heartbeat_seconds=heartbeat_seconds,
+            global_step_counter=global_step_counter,
+            run_label="held-out test",
+        )
+        if n_te > 0:
+            ts = global_step_counter[0]
+            mlflow.log_metric("test/mse_velocity", test_mse, step=ts)
+            mlflow.log_metric("test/l2_per_point_mean", test_l2, step=ts)
+            mlflow.log_metric("test/batches", float(n_te), step=ts)
+            if verbose:
+                print(
+                    f"Test summary: mean_mse={test_mse:.6f} mean_l2={test_l2:.6f} "
+                    f"batches={n_te}",
+                    flush=True,
+                )
+        elif verbose:
+            print(
+                "No test batches (set split.hash_ids.test_fraction > 0 in data_split.yaml).",
+                flush=True,
+            )
 
     mlflow.log_param("best_" + monitor.replace("/", "_"), best)
     if best_ckpt_path.is_file():
@@ -447,6 +498,7 @@ def main() -> int:
                 ),
                 "early_stopping_monitor": monitor,
                 "early_stopping_lower_is_better": lower,
+                "eval_test_at_end": bool(train_cfg.get("eval_test_at_end", True)),
             }
         )
     params["verbose_terminal"] = verbose
@@ -532,6 +584,9 @@ def main() -> int:
                         log_every_n_val_batches=log_every_val,
                         last_ckpt_path=last_ckpt,
                         heartbeat_seconds=heartbeat_seconds,
+                        eval_test_at_end=bool(
+                            train_cfg.get("eval_test_at_end", True)
+                        ),
                     )
                 else:
                     max_train = args.max_train_steps or int(

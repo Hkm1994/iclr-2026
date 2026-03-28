@@ -1,6 +1,10 @@
-# Central train / val / (optional) test membership + master seed.
+# Central train / val / test membership + master seed.
 # Bump `version` when this file changes; it is logged as MLflow param `data_split_version`.
-version: "0.1.0"
+#
+# hash_ids: every Hub sample (each .npz) is assigned to exactly one of train / val / test
+# (partition of the full dataset). Training only streams the train partition; val/test are
+# held out for evaluation (see train.eval_test_at_end in your training YAML).
+version: "0.2.0"
 
 dataset:
   repo_id: gram-competition/warped-ifw

@@ -13,7 +13,7 @@ Optional: `--max-train-steps 10` for a quick smoke (overrides YAML if wired—cu
 ## What is logged
 
 - **Params:** `mlflow_run_name`, `model_family`, `model`, `data_split_version`, `eval_protocol_version`, `seed`, lr, batch size, `train_subsample_N`, `eval_subsample_N`, config path.
-- **Metrics:** `train/mse_velocity`, `val/mse_velocity`, `val/l2_per_point_mean` (keys come from `configs/eval_protocol.yaml`).
+- **Metrics:** Epoch summaries use one **global MLflow step** per batch through the run (monotonic). Keys: `val/l2_per_point_mean` / `val/mse_velocity` (and `epoch/*` mirrors), `stream/*` for within-epoch curves, `test/*` after a final test pass when enabled. See `configs/eval_protocol.yaml`.
 
 ## Compare runs
 
