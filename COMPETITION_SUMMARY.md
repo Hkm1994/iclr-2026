@@ -10,7 +10,7 @@ This workspace holds a saved HTML copy of the competition page and a minimal `re
 
 ---
 
-## Task (CFD + ML)
+## Task (CFD + ML):
 
 - **Physics:** Transient airflow around F1-style front-wing–like geometries (Imperial Front Wing–derived CAD). BeyondMath provided transient CFD; velocity obeys **no-slip** on the airfoil surface \(\partial\Omega\).
 - **Learning goal:** A **geometry-conditioned neural operator** \(G_{\partial\Omega}\): given velocity on a fixed point cloud for the **first half** of a time window, predict velocity for the **second half**.
