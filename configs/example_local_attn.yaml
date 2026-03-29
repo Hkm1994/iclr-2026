@@ -1,0 +1,13 @@
+# Stub for local-neighborhood attention variant.
+experiment:
+  mlflow_experiment_name: gram-warped-ifw
+paths:
+  data_split: configs/data_split.yaml
+  eval_protocol: configs/eval_protocol.yaml
+train:
+  model: local_attn
+  model_family: local_attn
+  lr: 0.0001
+  max_train_steps: 10
+  train_subsample_N: 4096
+  device: null

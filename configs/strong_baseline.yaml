@@ -1,0 +1,68 @@
+# Strong streaming baseline: full train/val each epoch, early stopping when val plateaus.
+experiment:
+  mlflow_experiment_name: gram-warped-ifw-strong
+
+paths:
+  data_split: configs/data_split.yaml
+  eval_protocol: configs/eval_protocol.yaml
+
+train:
+  model: strong_mlp
+  model_family: strong_mlp
+  lr: 0.0003
+  weight_decay: 0.01
+  batch_size: 1
+  grad_accum_steps: 1
+  # Random subset of points per sample (full data has ~100k). 8192 fits M4 Air + strong_mlp;
+  # use 4096 if you OOM; null = all points (workstation only).
+  # Val/test point counts come from eval_protocol.yaml (null there = full ~100k); lower
+  # eval_subsample_N in that file if validation runs out of memory.
+  train_subsample_N: 8192
+  train_point_seed: 0
+  # Optional: stratify point subsampling by temporal-fluctuation proxy (not CFD turbulence).
+  # lam_fraction linearly interpolates from start→end across epochs (same model architecture).
+  # point_subsample:
+  #   mode: stratified_lam_turb
+  #   lam_fraction_start: 0.35
+  #   lam_fraction_end: 0.65
+  #   pool_quantile: 0.5
+  device: null
+
+  # Optional per-epoch LR schedule (see configs/strong_baseline_cosine.yaml for an example).
+  # lr_warmup_epochs: 0
+  # lr_schedule:
+  #   type: cosine
+  #   eta_min: 1.0e-6
+  #   t_max_epochs: 200
+  # lr_schedule:
+  #   type: plateau
+  #   mode: min
+  #   factor: 0.5
+  #   patience: 3
+  #   min_lr: 1.0e-7
+
+  # After training: one full pass over the held-out test split (requires test_fraction > 0).
+  eval_test_at_end: true
+
+  # Full passes over hash_ids train / val partitions (see data_split.yaml).
+  max_epochs: 200
+  min_epochs: 20
+  early_stopping_patience: 15
+  early_stopping_min_delta: 1.0e-5
+  # Defaults to eval_protocol.primary_kpi if omitted:
+  early_stopping_monitor: val/l2_per_point_mean
+  early_stopping_lower_is_better: null
+
+  best_checkpoint_path: checkpoints/strong_mlp_best.pt
+  last_checkpoint_path: checkpoints/strong_mlp_last.pt
+  # Wall-clock heartbeat if no batch logs for this long (download / huge step); null to disable.
+  heartbeat_seconds: 180
+
+  # Terminal + MLflow: batch-level metrics during each train/val pass (set 0 or null to disable).
+  verbose: true
+  log_every_n_train_batches: 100
+  log_every_n_val_batches: 100
+
+  # Step-based single pass (legacy); ignored when max_epochs is set.
+  max_train_steps: null
+  max_val_steps: null

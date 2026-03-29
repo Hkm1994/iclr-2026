@@ -1,0 +1,14 @@
+# Python 3.10+ recommended. Create venv: python -m venv .venv && source .venv/bin/activate
+# Install PyTorch for your platform: https://pytorch.org/get-started/locally/
+torch>=2.1.0
+datasets>=2.16.0
+huggingface_hub>=0.20.0
+mlflow>=2.10.0
+pandas>=2.0.0
+pyyaml>=6.0.1
+tqdm>=4.66.0
+pyarrow>=14.0.0
+numpy>=1.24.0
+
+# Dev / CI
+pytest>=7.4.0

@@ -1,0 +1,814 @@
+#!/usr/bin/env python3
+"""Train with HF streaming, MLflow logging, central data_split + eval_protocol."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from training.hf_progress import silence_hf_download_progress
+
+silence_hf_download_progress()
+
+import mlflow
+import torch
+from torch.optim import AdamW
+
+from models.registry import get_model_class
+from training.epoch_loop import (
+    evaluate_split_full,
+    is_better,
+    train_one_epoch,
+    validate_full,
+)
+from training.lr_schedule import build_epoch_lr_scheduler, step_lr_scheduler
+from training.memory_utils import release_training_memory
+from training.mlflow_steps import new_stream_counters
+from training.ema import ModelEMA
+from training.hf_dataset import streaming_batches, subsample_batch_preforward
+from training.metrics import (
+    l2_per_point_mean,
+    mse_velocity,
+    mse_velocity_train_weighted,
+    subsample_points,
+)
+from training.seeds import seed_all
+from training.mlflow_run_name import make_mlflow_run_name
+from training.train_checkpointing import (
+    register_interrupt_checkpoint,
+    save_state_dict_atomic,
+)
+from training.device_utils import resolve_train_device
+from training.yaml_config import load_yaml
+
+
+def _positive_int_or_none(x) -> int | None:
+    if x is None:
+        return None
+    n = int(x)
+    if n <= 0:
+        return None
+    return n
+
+
+def _point_subsample_options(train_cfg: dict, epoch_idx: int, max_epochs: int) -> dict:
+    """Train-time point subsample mode; ``lam_fraction`` can vary by epoch."""
+    ps = train_cfg.get("point_subsample")
+    if not ps:
+        return {"mode": "random"}
+    mode = str(ps.get("mode", "random"))
+    if mode != "stratified_lam_turb":
+        return {"mode": mode}
+    max_e = max(int(max_epochs), 1)
+    t = 0.0 if max_e <= 1 else float(epoch_idx) / float(max_e - 1)
+    lam0 = float(ps.get("lam_fraction_start", 0.5))
+    lam1 = float(ps.get("lam_fraction_end", 0.5))
+    lam_f = lam0 + t * (lam1 - lam0)
+    return {
+        "mode": "stratified_lam_turb",
+        "lam_fraction": lam_f,
+        "pool_quantile": float(ps.get("pool_quantile", 0.5)),
+    }
+
+
+def _save_checkpoint_with_optional_ema(
+    model: torch.nn.Module,
+    path: Path,
+    ema: ModelEMA | None,
+) -> None:
+    """When ``ema`` is set, saves shadow weights (same as used for val when EMA is on)."""
+    if ema is None:
+        save_state_dict_atomic(path, model)
+        return
+    backup = ema.swap_in_shadow(model)
+    try:
+        save_state_dict_atomic(path, model)
+    finally:
+        ema.restore(model, backup)
+
+
+def _run_legacy_step_training(
+    *,
+    model,
+    opt,
+    data_split_path: Path,
+    device: torch.device,
+    train_cfg: dict,
+    ev_cfg: dict,
+    max_train: int,
+    max_val: int,
+    grad_accum: int,
+    batch_size: int,
+    train_sub,
+    point_seed_train: int,
+    eval_seed: int,
+    eval_sub,
+    eval_preforward_subsample_N: int | None,
+    verbose: bool,
+    log_every_n_train_batches: int | None,
+    log_mlflow_train_every_n: int | None,
+    last_ckpt_path: Path,
+    heartbeat_seconds: float | None,
+    loss_turb_weight_alpha: float = 0.0,
+    loss_timestep_weights: torch.Tensor | None = None,
+    ema: ModelEMA | None = None,
+) -> None:
+    step = 0
+    accum = 0
+    opt.zero_grad(set_to_none=True)
+    mlflow_train = log_mlflow_train_every_n
+    if mlflow_train is None:
+        mlflow_train = 1
+    hb_last = time.monotonic()
+
+    if verbose:
+        print(
+            f"[legacy train] max_train_steps={max_train} batch_size={batch_size} "
+            f"train_subsample_N={train_sub!s}",
+            flush=True,
+        )
+
+    train_it = streaming_batches(
+        data_split_path,
+        "train",
+        device=device,
+        batch_size=batch_size,
+        train_subsample_N=train_sub,
+        point_seed=point_seed_train,
+        max_batches=None,
+    )
+
+    for batch in train_it:
+        pred = model(batch.t, batch.pos, batch.idcs_airfoil, batch.velocity_in)
+        loss = mse_velocity_train_weighted(
+            pred,
+            batch.velocity_out,
+            batch.velocity_in,
+            turb_alpha=loss_turb_weight_alpha,
+            timestep_weights=loss_timestep_weights,
+        )
+        (loss / grad_accum).backward()
+        accum += 1
+        if accum >= grad_accum:
+            opt.step()
+            opt.zero_grad(set_to_none=True)
+            if ema is not None:
+                ema.update(model)
+            accum = 0
+        loss_f = float(loss.detach().cpu())
+        if step == 0 or (step + 1) % mlflow_train == 0:
+            mlflow.log_metric("train/mse_velocity", loss_f, step=step)
+        if verbose and log_every_n_train_batches is not None:
+            if step == 0 or (step + 1) % log_every_n_train_batches == 0:
+                print(
+                    f"  [train] step {step + 1}/{max_train} mse={loss_f:.6f} "
+                    f"points={batch.pos.shape[1]}",
+                    flush=True,
+                )
+        step += 1
+        if heartbeat_seconds is not None and heartbeat_seconds > 0:
+            now = time.monotonic()
+            if now - hb_last >= heartbeat_seconds:
+                if verbose:
+                    print(
+                        f"  [heartbeat] legacy train step {step} mse={loss_f:.6f} (still running…)",
+                        flush=True,
+                    )
+                hb_last = now
+        if step >= max_train:
+            break
+
+    if accum > 0:
+        opt.step()
+        opt.zero_grad(set_to_none=True)
+        if ema is not None:
+            ema.update(model)
+
+    if verbose:
+        print(f"[legacy train] finished {step} optimizer steps", flush=True)
+    release_training_memory()
+
+    g = torch.Generator()
+    g.manual_seed(eval_seed)
+    val_step = 0
+    val_mse_acc = 0.0
+    val_l2_acc = 0.0
+    val_count = 0
+    hb_last = time.monotonic()
+    val_it = streaming_batches(
+        data_split_path,
+        "val",
+        device=device,
+        batch_size=batch_size,
+        train_subsample_N=None,
+        point_seed=eval_seed,
+        max_batches=max_val,
+    )
+    if verbose:
+        print(f"[legacy val] max_val_steps={max_val}", flush=True)
+    backup = ema.swap_in_shadow(model) if ema is not None else None
+    try:
+        with torch.no_grad():
+            for batch in val_it:
+                if eval_preforward_subsample_N is not None:
+                    batch = subsample_batch_preforward(
+                        batch, eval_preforward_subsample_N, g
+                    )
+                pred = model(batch.t, batch.pos, batch.idcs_airfoil, batch.velocity_in)
+                p, tgt = subsample_points(pred, batch.velocity_out, eval_sub, generator=g)
+                vm = mse_velocity(p, tgt)
+                vl = l2_per_point_mean(p, tgt)
+                val_mse_acc += float(vm.cpu())
+                val_l2_acc += float(vl.cpu())
+                val_count += 1
+                val_step += 1
+                if verbose and log_every_n_train_batches and (
+                    val_count == 1 or val_count % log_every_n_train_batches == 0
+                ):
+                    print(
+                        f"  [val] batch {val_count}/{max_val} mse={float(vm.cpu()):.6f} "
+                        f"l2={float(vl.cpu()):.6f}",
+                        flush=True,
+                    )
+                if heartbeat_seconds is not None and heartbeat_seconds > 0:
+                    now = time.monotonic()
+                    if now - hb_last >= heartbeat_seconds:
+                        if verbose:
+                            print(
+                                f"  [heartbeat] legacy val batch {val_count} (still running…)",
+                                flush=True,
+                            )
+                        hb_last = now
+                if val_step >= max_val:
+                    break
+
+        if val_count > 0:
+            vs = val_count
+            mlflow.log_metric("val/mse_velocity", val_mse_acc / val_count, step=vs)
+            mlflow.log_metric("val/l2_per_point_mean", val_l2_acc / val_count, step=vs)
+            if verbose:
+                print(
+                    f"[legacy val] mean mse={val_mse_acc / val_count:.6f} "
+                    f"mean l2={val_l2_acc / val_count:.6f}",
+                    flush=True,
+                )
+        save_state_dict_atomic(last_ckpt_path, model)
+    finally:
+        if backup is not None:
+            ema.restore(model, backup)
+    release_training_memory()
+
+
+def _run_epoch_training(
+    *,
+    model,
+    opt,
+    data_split_path: Path,
+    device: torch.device,
+    train_cfg: dict,
+    ev_cfg: dict,
+    grad_accum: int,
+    batch_size: int,
+    train_sub,
+    point_seed_train: int,
+    eval_seed: int,
+    eval_sub,
+    eval_preforward_subsample_N: int | None,
+    max_epochs: int,
+    min_epochs: int,
+    patience: int,
+    min_delta: float,
+    monitor: str,
+    lower_is_better: bool,
+    best_ckpt_path: Path,
+    verbose: bool,
+    log_every_n_train_batches: int | None,
+    log_every_n_val_batches: int | None,
+    last_ckpt_path: Path,
+    heartbeat_seconds: float | None,
+    eval_test_at_end: bool,
+    loss_turb_weight_alpha: float = 0.0,
+    loss_timestep_weights: torch.Tensor | None = None,
+    ema: ModelEMA | None = None,
+) -> None:
+    metric_keys = {
+        "val/mse_velocity": "mse",
+        "val/l2_per_point_mean": "l2",
+    }
+    if monitor not in metric_keys:
+        raise ValueError(
+            f"early_stopping_monitor must be one of {list(metric_keys)}, got {monitor!r}"
+        )
+
+    best = float("inf") if lower_is_better else float("-inf")
+    epochs_without_improve = 0
+    stream_steps = new_stream_counters()
+    lr_sched, lr_sched_kind = build_epoch_lr_scheduler(opt, train_cfg, max_epochs)
+
+    if verbose:
+        print(
+            f"\n=== Epoch training: max_epochs={max_epochs} min_epochs={min_epochs} "
+            f"patience={patience} monitor={monitor} ===\n",
+            flush=True,
+        )
+
+    for epoch in range(max_epochs):
+        seed_ep = int(point_seed_train) + epoch * 1_000_003
+        if verbose:
+            print(
+                f"\n--- Epoch {epoch + 1}/{max_epochs} | train (seed_ep={seed_ep}) ---",
+                flush=True,
+            )
+        subsample_opts = _point_subsample_options(train_cfg, epoch, max_epochs)
+        train_loss, n_tr = train_one_epoch(
+            model=model,
+            opt=opt,
+            data_split_path=data_split_path,
+            device=device,
+            batch_size=batch_size,
+            grad_accum=grad_accum,
+            train_subsample_N=train_sub,
+            point_seed=seed_ep,
+            train_stream_step_counter=stream_steps.train_batch,
+            epoch_idx=epoch,
+            log_every_n_batches=log_every_n_train_batches,
+            verbose=verbose,
+            heartbeat_seconds=heartbeat_seconds,
+            subsample_options=subsample_opts,
+            loss_turb_weight_alpha=loss_turb_weight_alpha,
+            loss_timestep_weights=loss_timestep_weights,
+            ema=ema,
+        )
+        if verbose:
+            print(
+                f"--- Epoch {epoch + 1}/{max_epochs} | validation ---",
+                flush=True,
+            )
+        backup = ema.swap_in_shadow(model) if ema is not None else None
+        try:
+            val_mse, val_l2, n_val, val_lt = validate_full(
+                model=model,
+                data_split_path=data_split_path,
+                device=device,
+                batch_size=batch_size,
+                eval_subsample_N=eval_sub,
+                eval_seed=eval_seed,
+                epoch_idx=epoch,
+                log_every_n_batches=log_every_n_val_batches,
+                verbose=verbose,
+                heartbeat_seconds=heartbeat_seconds,
+                eval_stream_step_counter=stream_steps.val_batch,
+                eval_preforward_subsample_N=eval_preforward_subsample_N,
+            )
+        finally:
+            if backup is not None:
+                ema.restore(model, backup)
+        if n_val == 0:
+            print("Validation produced zero batches; check data_split and HF access.")
+            _save_checkpoint_with_optional_ema(model, last_ckpt_path, ema)
+            release_training_memory()
+            break
+
+        # Use val stream step so epoch summaries share MLflow's x-axis with stream/val_*.
+        ep_step = stream_steps.val_batch[0]
+        mlflow.log_metric("epoch/epoch_index", float(epoch), step=ep_step)
+        mlflow.log_metric("epoch/train_mean_mse", train_loss, step=ep_step)
+        mlflow.log_metric("epoch/train_batches", float(n_tr), step=ep_step)
+        mlflow.log_metric("epoch/val_mse", val_mse, step=ep_step)
+        mlflow.log_metric("epoch/val_l2", val_l2, step=ep_step)
+        mlflow.log_metric("epoch/val_batches", float(n_val), step=ep_step)
+        # Stable names for reporting / primary_kpi (same value as epoch/val_* at this step).
+        mlflow.log_metric("train/mse_velocity_epoch_mean", train_loss, step=ep_step)
+        mlflow.log_metric("val/mse_velocity", val_mse, step=ep_step)
+        mlflow.log_metric("val/l2_per_point_mean", val_l2, step=ep_step)
+        for k, v in val_lt.items():
+            mlflow.log_metric(k, v, step=ep_step)
+            if k.startswith("val/"):
+                mlflow.log_metric(
+                    "epoch/val_" + k.removeprefix("val/").replace("/", "_"),
+                    v,
+                    step=ep_step,
+                )
+
+        current = val_mse if metric_keys[monitor] == "mse" else val_l2
+
+        step_lr_scheduler(lr_sched, lr_sched_kind, monitor_value=current)
+        mlflow.log_metric(
+            "epoch/learning_rate",
+            float(opt.param_groups[0]["lr"]),
+            step=ep_step,
+        )
+
+        if is_better(current, best, min_delta=min_delta, lower_is_better=lower_is_better):
+            best = current
+            epochs_without_improve = 0
+            _save_checkpoint_with_optional_ema(model, best_ckpt_path, ema)
+        else:
+            epochs_without_improve += 1
+        mlflow.log_metric(
+            "val/best_" + monitor.replace("/", "_"), best, step=ep_step
+        )
+
+        if verbose:
+            imp = "improved" if epochs_without_improve == 0 else f"no_improve_{epochs_without_improve}"
+            print(
+                f"--- Epoch {epoch + 1} summary | train_mean_mse={train_loss:.6f} "
+                f"val_mse={val_mse:.6f} val_l2={val_l2:.6f} | "
+                f"best_{monitor}={best:.6f} ({imp}) | batches train/val={n_tr}/{n_val} ---\n",
+                flush=True,
+            )
+
+        _save_checkpoint_with_optional_ema(model, last_ckpt_path, ema)
+        release_training_memory()
+
+        if epoch + 1 >= min_epochs and epochs_without_improve >= patience:
+            mlflow.log_param("stopped_epoch", epoch + 1)
+            mlflow.log_param("stop_reason", "early_stopping")
+            if verbose:
+                print(
+                    f"Early stopping: no improvement for {patience} epochs "
+                    f"(after min_epochs={min_epochs}).",
+                    flush=True,
+                )
+            break
+    else:
+        mlflow.log_param("stopped_epoch", max_epochs)
+        mlflow.log_param("stop_reason", "max_epochs")
+        if verbose:
+            print(f"Stopped: reached max_epochs={max_epochs}.", flush=True)
+
+    if eval_test_at_end:
+        if verbose:
+            print("\n=== Final pass: held-out test split (all test shards) ===", flush=True)
+        backup_te = ema.swap_in_shadow(model) if ema is not None else None
+        try:
+            test_mse, test_l2, n_te, test_lt = evaluate_split_full(
+                model=model,
+                data_split_path=data_split_path,
+                device=device,
+                batch_size=batch_size,
+                eval_subsample_N=eval_sub,
+                eval_seed=eval_seed,
+                phase="test",
+                epoch_idx=0,
+                log_every_n_batches=log_every_n_val_batches,
+                verbose=verbose,
+                heartbeat_seconds=heartbeat_seconds,
+                eval_stream_step_counter=stream_steps.test_batch,
+                run_label="held-out test",
+                eval_preforward_subsample_N=eval_preforward_subsample_N,
+            )
+        finally:
+            if backup_te is not None:
+                ema.restore(model, backup_te)
+        if n_te > 0:
+            ts = stream_steps.test_batch[0]
+            mlflow.log_metric("test/mse_velocity", test_mse, step=ts)
+            mlflow.log_metric("test/l2_per_point_mean", test_l2, step=ts)
+            mlflow.log_metric("test/batches", float(n_te), step=ts)
+            for k, v in test_lt.items():
+                mlflow.log_metric(k, v, step=ts)
+            if verbose:
+                print(
+                    f"Test summary: mean_mse={test_mse:.6f} mean_l2={test_l2:.6f} "
+                    f"batches={n_te}",
+                    flush=True,
+                )
+        elif verbose:
+            print(
+                "No test batches (set split.hash_ids.test_fraction > 0 in data_split.yaml).",
+                flush=True,
+            )
+
+    mlflow.log_param("best_" + monitor.replace("/", "_"), best)
+    if best_ckpt_path.is_file():
+        mlflow.log_artifact(str(best_ckpt_path), artifact_path="checkpoints")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", type=str, default="configs/example_mlp.yaml")
+    ap.add_argument("--max-train-steps", type=int, default=None)
+    ap.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Disable verbose terminal progress (MLflow batch metrics still logged unless disabled in YAML).",
+    )
+    args = ap.parse_args()
+
+    cfg_path = Path(args.config)
+    cfg = load_yaml(cfg_path)
+    paths = cfg["paths"]
+    train_cfg = cfg["train"]
+    exp_cfg = cfg.get("experiment", {})
+
+    data_split_path = Path(paths["data_split"])
+    eval_path = Path(paths["eval_protocol"])
+    ds_cfg = load_yaml(data_split_path)
+    ev_cfg = load_yaml(eval_path)
+
+    master_seed = int(ds_cfg["seed"])
+    seed_all(master_seed)
+
+    device = resolve_train_device(train_cfg)
+    model_name = train_cfg["model"]
+    model_cls = get_model_class(model_name)
+
+    model_cfg: dict = {"skip_weights": True}
+    extra_mc = train_cfg.get("model_config")
+    if isinstance(extra_mc, dict):
+        model_cfg.update(extra_mc)
+    model_cfg["skip_weights"] = True
+    if train_cfg.get("checkpoint_path"):
+        model = model_cls(config=model_cfg)
+        ck = torch.load(train_cfg["checkpoint_path"], map_location="cpu", weights_only=True)
+        model.load_state_dict(ck)
+    else:
+        model = model_cls(config=model_cfg)
+    model = model.to(device)
+
+    lr = float(train_cfg.get("lr", 1e-4))
+    wd = float(train_cfg.get("weight_decay", 0.0))
+    opt = AdamW(model.parameters(), lr=lr, weight_decay=wd)
+
+    loss_turb_alpha = float(train_cfg.get("loss_turb_weight_alpha", 0.0))
+    ltw_raw = train_cfg.get("loss_timestep_weights")
+    loss_ts_tensor: torch.Tensor | None = None
+    if ltw_raw is not None:
+        loss_ts_tensor = torch.tensor(
+            [float(x) for x in ltw_raw], dtype=torch.float32, device=device
+        )
+        mc = train_cfg.get("model_config")
+        mc = mc if isinstance(mc, dict) else {}
+        nt = int(getattr(model, "num_output_timesteps", mc.get("num_output_timesteps", 5)))
+        if loss_ts_tensor.numel() != nt:
+            raise ValueError(
+                f"loss_timestep_weights length {loss_ts_tensor.numel()} != "
+                f"num_output_timesteps {nt}"
+            )
+    use_ema_cfg = bool(train_cfg.get("use_ema", False))
+    ema: ModelEMA | None = None
+    if use_ema_cfg:
+        ema = ModelEMA(model, float(train_cfg.get("ema_decay", 0.999)))
+
+    batch_size = int(train_cfg.get("batch_size", 1))
+    grad_accum = int(train_cfg.get("grad_accum_steps", 1))
+    train_sub = train_cfg.get("train_subsample_N")
+    point_seed_train = int(train_cfg.get("train_point_seed", 0))
+    eval_sub = ev_cfg.get("eval_subsample_N")
+    eval_seed = int(ev_cfg.get("eval_point_subsample_seed", 0))
+    eval_preforward_subsample_N = _positive_int_or_none(
+        train_cfg.get("eval_preforward_subsample_N")
+    )
+
+    max_epochs = train_cfg.get("max_epochs")
+    use_epochs = max_epochs is not None
+
+    verbose = bool(train_cfg.get("verbose", True)) and not args.quiet
+    log_every_train = _positive_int_or_none(
+        train_cfg.get("log_every_n_train_batches", 5)
+    )
+    log_every_val = _positive_int_or_none(
+        train_cfg.get(
+            "log_every_n_val_batches",
+            train_cfg.get("log_every_n_train_batches", 5),
+        )
+    )
+    log_mlflow_train_every = _positive_int_or_none(
+        train_cfg.get("log_mlflow_train_every_n_steps", 1)
+    )
+
+    last_ckpt = Path(
+        train_cfg.get("last_checkpoint_path") or f"checkpoints/{model_name}_last.pt"
+    )
+    hb_raw = train_cfg.get("heartbeat_seconds")
+    if hb_raw is None:
+        heartbeat_seconds: float | None = None
+    else:
+        heartbeat_seconds = float(hb_raw)
+        if heartbeat_seconds <= 0:
+            heartbeat_seconds = None
+
+    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "file:./mlruns"))
+    mlflow.set_experiment(exp_cfg.get("mlflow_experiment_name", "gram-warped-ifw"))
+
+    data_split_version = str(ds_cfg.get("version", "unknown"))
+    eval_version = str(ev_cfg.get("version", "unknown"))
+
+    params = {
+        "model_family": train_cfg.get("model_family", model_name),
+        "model": model_name,
+        "data_split_version": data_split_version,
+        "eval_protocol_version": eval_version,
+        "seed": master_seed,
+        "lr": lr,
+        "weight_decay": wd,
+        "batch_size": batch_size,
+        "train_subsample_N": train_sub if train_sub is not None else "full",
+        "eval_subsample_N": eval_sub if eval_sub is not None else "full",
+        "eval_preforward_subsample_N": (
+            eval_preforward_subsample_N
+            if eval_preforward_subsample_N is not None
+            else "off"
+        ),
+        "config_file": str(cfg_path),
+        "training_mode": "epoch" if use_epochs else "steps",
+    }
+    if use_epochs:
+        monitor = train_cfg.get("early_stopping_monitor") or ev_cfg.get(
+            "primary_kpi", "val/l2_per_point_mean"
+        )
+        lower = train_cfg.get("early_stopping_lower_is_better")
+        if lower is None:
+            lower = bool(ev_cfg.get("lower_is_better", True))
+        params.update(
+            {
+                "max_epochs": int(max_epochs),
+                "min_epochs": int(train_cfg.get("min_epochs", 1)),
+                "early_stopping_patience": int(train_cfg.get("early_stopping_patience", 10)),
+                "early_stopping_min_delta": float(
+                    train_cfg.get("early_stopping_min_delta", 0.0)
+                ),
+                "early_stopping_monitor": monitor,
+                "early_stopping_lower_is_better": lower,
+                "eval_test_at_end": bool(train_cfg.get("eval_test_at_end", True)),
+            }
+        )
+    params["verbose_terminal"] = verbose
+    params["log_every_n_train_batches"] = log_every_train or "off"
+    params["log_every_n_val_batches"] = log_every_val or "off"
+    params["last_checkpoint_path"] = str(last_ckpt)
+    params["heartbeat_seconds"] = (
+        heartbeat_seconds if heartbeat_seconds is not None else "off"
+    )
+    if not use_epochs:
+        params["log_mlflow_train_every_n_steps"] = log_mlflow_train_every or "off"
+
+    ps = train_cfg.get("point_subsample")
+    if ps:
+        params["point_subsample"] = repr(ps)
+    wu = train_cfg.get("lr_warmup_epochs")
+    if wu is not None:
+        params["lr_warmup_epochs"] = int(wu)
+    ls = train_cfg.get("lr_schedule")
+    if ls:
+        params["lr_schedule"] = repr(ls)
+    params["loss_turb_weight_alpha"] = loss_turb_alpha
+    params["loss_timestep_weights"] = (
+        [float(x) for x in ltw_raw] if ltw_raw is not None else "off"
+    )
+    params["use_ema"] = use_ema_cfg
+    params["ema_decay"] = (
+        float(train_cfg.get("ema_decay", 0.999)) if use_ema_cfg else "off"
+    )
+
+    mlflow_run_name = make_mlflow_run_name(model_name, train_cfg, exp_cfg)
+    params["mlflow_run_name"] = mlflow_run_name
+
+    restore_sig = register_interrupt_checkpoint(model, last_ckpt, verbose=verbose)
+    try:
+        with mlflow.start_run(run_name=mlflow_run_name):
+            mlflow.log_params(params)
+            mlflow.log_artifact(str(cfg_path), artifact_path="config")
+
+            if verbose:
+                print(
+                    f"MLflow run_name={mlflow_run_name}",
+                    flush=True,
+                )
+                print(
+                    f"MLflow experiment={exp_cfg.get('mlflow_experiment_name', 'gram-warped-ifw')} "
+                    f"tracking_uri={os.environ.get('MLFLOW_TRACKING_URI', 'file:./mlruns')}",
+                    flush=True,
+                )
+                print(
+                    f"Model={model_name} device={device} | data_split={data_split_path} | "
+                    f"eval_protocol={eval_path}",
+                    flush=True,
+                )
+                if use_epochs:
+                    print(
+                        f"Logging: train batch metrics every {log_every_train or 'never'} batches, "
+                        f"val every {log_every_val or 'never'} batches.",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"Logging: terminal every {log_every_train or 'never'} steps; "
+                        f"MLflow train metric every {log_mlflow_train_every or 'never'} steps.",
+                        flush=True,
+                    )
+                print(
+                    f"Checkpoints: last={last_ckpt} (every epoch end + on interrupt/error); "
+                    f"best=see config best_checkpoint_path (epoch mode). "
+                    f"Heartbeat: {heartbeat_seconds or 'off'} s.",
+                    flush=True,
+                )
+
+            try:
+                if use_epochs:
+                    ck = train_cfg.get("best_checkpoint_path")
+                    if ck is None:
+                        ck = f"checkpoints/{model_name}_best.pt"
+                    _run_epoch_training(
+                        model=model,
+                        opt=opt,
+                        data_split_path=data_split_path,
+                        device=device,
+                        train_cfg=train_cfg,
+                        ev_cfg=ev_cfg,
+                        grad_accum=grad_accum,
+                        batch_size=batch_size,
+                        train_sub=train_sub,
+                        point_seed_train=point_seed_train,
+                        eval_seed=eval_seed,
+                        eval_sub=eval_sub,
+                        eval_preforward_subsample_N=eval_preforward_subsample_N,
+                        max_epochs=int(max_epochs),
+                        min_epochs=int(train_cfg.get("min_epochs", 1)),
+                        patience=int(train_cfg.get("early_stopping_patience", 10)),
+                        min_delta=float(train_cfg.get("early_stopping_min_delta", 0.0)),
+                        monitor=monitor,
+                        lower_is_better=bool(lower),
+                        best_ckpt_path=Path(ck),
+                        verbose=verbose,
+                        log_every_n_train_batches=log_every_train,
+                        log_every_n_val_batches=log_every_val,
+                        last_ckpt_path=last_ckpt,
+                        heartbeat_seconds=heartbeat_seconds,
+                        eval_test_at_end=bool(
+                            train_cfg.get("eval_test_at_end", True)
+                        ),
+                        loss_turb_weight_alpha=loss_turb_alpha,
+                        loss_timestep_weights=loss_ts_tensor,
+                        ema=ema,
+                    )
+                else:
+                    max_train = args.max_train_steps or int(
+                        train_cfg.get("max_train_steps", 100)
+                    )
+                    max_val = int(train_cfg.get("max_val_steps", 10))
+                    _run_legacy_step_training(
+                        model=model,
+                        opt=opt,
+                        data_split_path=data_split_path,
+                        device=device,
+                        train_cfg=train_cfg,
+                        ev_cfg=ev_cfg,
+                        max_train=max_train,
+                        max_val=max_val,
+                        grad_accum=grad_accum,
+                        batch_size=batch_size,
+                        train_sub=train_sub,
+                        point_seed_train=point_seed_train,
+                        eval_seed=eval_seed,
+                        eval_sub=eval_sub,
+                        eval_preforward_subsample_N=eval_preforward_subsample_N,
+                        verbose=verbose,
+                        log_every_n_train_batches=log_every_train,
+                        log_mlflow_train_every_n=log_mlflow_train_every,
+                        last_ckpt_path=last_ckpt,
+                        heartbeat_seconds=heartbeat_seconds,
+                        loss_turb_weight_alpha=loss_turb_alpha,
+                        loss_timestep_weights=loss_ts_tensor,
+                        ema=ema,
+                    )
+            except KeyboardInterrupt:
+                save_state_dict_atomic(last_ckpt, model)
+                release_training_memory()
+                if verbose:
+                    print(
+                        f"[checkpoint] Saved to {last_ckpt} (KeyboardInterrupt)\n",
+                        flush=True,
+                    )
+                raise
+            except Exception as e:
+                save_state_dict_atomic(last_ckpt, model)
+                release_training_memory()
+                if verbose:
+                    print(
+                        f"[checkpoint] Saved to {last_ckpt} after error.\n",
+                        flush=True,
+                    )
+                print("Training failed:", e)
+                print(
+                    "Check HF_TOKEN / huggingface-cli login and configs/data_split.yaml id_key."
+                )
+                return 1
+
+            print("Done. MLflow UI: mlflow ui --backend-store-uri ./mlruns")
+            return 0
+    finally:
+        restore_sig()
+        release_training_memory()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,19 @@
+# Fast end-to-end check: HF .npz stream + tiny model + MLflow + val metrics.
+experiment:
+  mlflow_experiment_name: gram-warped-ifw
+
+paths:
+  data_split: configs/data_split.yaml
+  eval_protocol: configs/eval_protocol.yaml
+
+train:
+  model: tiny_linear
+  model_family: tiny_linear
+  lr: 0.01
+  weight_decay: 0.0
+  max_train_steps: 8
+  max_val_steps: 3
+  batch_size: 1
+  grad_accum_steps: 1
+  train_subsample_N: 4096
+  device: null

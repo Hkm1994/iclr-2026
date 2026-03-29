@@ -1,0 +1,19 @@
+# Example training config — references central split + eval protocol only.
+experiment:
+  mlflow_experiment_name: gram-warped-ifw
+
+paths:
+  data_split: configs/data_split.yaml
+  eval_protocol: configs/eval_protocol.yaml
+
+train:
+  model: mlp
+  model_family: mlp
+  lr: 0.0001
+  weight_decay: 0.01
+  max_train_steps: 50
+  max_val_steps: 10
+  batch_size: 1
+  grad_accum_steps: 1
+  train_subsample_N: 8192
+  device: null  # cuda if available else cpu

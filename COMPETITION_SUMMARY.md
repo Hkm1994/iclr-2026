@@ -99,3 +99,4 @@ The repo’s `main.py` uses dummy tensors to check output shape; it prints a **h
 | Competition website | https://gram-competition.github.io |
 | Submission (GitHub) | https://github.com/gram-competition/iclr-2026 |
 | Dataset | https://huggingface.co/datasets/gram-competition/warped-ifw |
+W

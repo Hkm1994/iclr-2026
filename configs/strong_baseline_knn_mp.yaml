@@ -1,0 +1,60 @@
+# strong_mlp_knn_mp: kNN + neighbor attention + one MP block + distance-to-surface features.
+# Option A: ReduceLROnPlateau on val L2, stronger WD/dropout, tighter early stopping.
+# First trunk dim must equal raw_feature_dim (58) + mp_hidden_dim (128) = 186.
+
+experiment:
+  mlflow_experiment_name: gram-warped-ifw-strong
+
+paths:
+  data_split: configs/data_split.yaml
+  eval_protocol: configs/eval_protocol.yaml
+
+train:
+  model: strong_mlp_knn_mp
+  model_family: strong_mlp_knn_mp
+  lr: 0.0003
+  weight_decay: 0.025
+  batch_size: 1
+  grad_accum_steps: 1
+  train_subsample_N: 8192
+  train_point_seed: 0
+  eval_preforward_subsample_N: 8192
+  device: mps
+
+  model_config:
+    mp_hidden_dim: 128
+    dropout_probability: 0.15
+    num_channels: [186, 512, 512, 256]
+
+  lr_warmup_epochs: 0
+  lr_schedule:
+    type: plateau
+    mode: min
+    factor: 0.5
+    patience: 3
+    min_lr: 1.0e-7
+    threshold: 1.0e-4
+
+  eval_test_at_end: true
+  max_epochs: 200
+  min_epochs: 20
+  early_stopping_patience: 10
+  early_stopping_min_delta: 1.0e-5
+  early_stopping_monitor: val/l2_per_point_mean
+  early_stopping_lower_is_better: null
+
+  best_checkpoint_path: checkpoints/strong_mlp_knn_mp_best.pt
+  last_checkpoint_path: checkpoints/strong_mlp_knn_mp_last.pt
+  heartbeat_seconds: 180
+  verbose: true
+  log_every_n_train_batches: 100
+  log_every_n_val_batches: 100
+  max_train_steps: null
+  max_val_steps: null
+
+  # Optional: stratified lam/turb subsampling (see training/hf_dataset point_subsample)
+  # point_subsample:
+  #   mode: stratified_lam_turb
+  #   lam_fraction_start: 0.5
+  #   lam_fraction_end: 0.5
+  #   pool_quantile: 0.5

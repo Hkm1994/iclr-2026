@@ -1,0 +1,3 @@
+# Optional: GNN / graph experiments (install torch first, then PyG per https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html)
+-r requirements.txt
+torch-geometric>=2.4.0

@@ -7,10 +7,26 @@ from torch.nn import Dropout, Identity, LayerNorm, Linear, ReLU
 from models.base import GramForecastModel
 
 
-class MLP(GramForecastModel):
-    """Per-point MLP baseline; submission: Model() loads models/mlp/state_dict.pt when present."""
+def _surface_mask(
+    pos: torch.Tensor,
+    idcs_airfoil: list[torch.Tensor],
+) -> torch.Tensor:
+    """(B, N, 1) float indicator: 1 on airfoil surface points."""
+    b, n, _ = pos.shape
+    m = torch.zeros(b, n, 1, device=pos.device, dtype=pos.dtype)
+    for i, idcs in enumerate(idcs_airfoil):
+        if idcs.numel() > 0:
+            m[i, idcs.long(), 0] = 1.0
+    return m
 
-    num_channels_default = (18, 256, 15)
+
+class StrongMLP(GramForecastModel):
+    """
+    Per-point MLP on pos, flattened velocity_in, full time series t, and a surface indicator.
+    Wider/deeper than `MLP` for a stronger streaming baseline.
+    """
+
+    num_channels_default = (29, 512, 512, 256, 15)
     dropout_probability = 0.1
 
     def __init__(self, config: Optional[dict[str, Any]] = None):
@@ -40,7 +56,7 @@ class MLP(GramForecastModel):
         if cfg.get("skip_weights"):
             weight_path = None
         elif config is None:
-            weight_path = os.path.join("models", "mlp", "state_dict.pt")
+            weight_path = os.path.join("models", "strong_mlp", "state_dict.pt")
         else:
             weight_path = cfg.get("weight_path")
 
@@ -55,11 +71,11 @@ class MLP(GramForecastModel):
         idcs_airfoil: list[torch.Tensor],
         velocity_in: torch.Tensor,
     ) -> torch.Tensor:
-        del t, idcs_airfoil
         batch_size, num_t_in, num_pos, _ = velocity_in.shape
-        x = self.flatten_velocity_in(velocity_in)
-
-        x = torch.cat((pos, x), dim=2)
+        x_vel = self.flatten_velocity_in(velocity_in)
+        t_exp = t.unsqueeze(1).expand(batch_size, num_pos, t.shape[-1])
+        surf = _surface_mask(pos, idcs_airfoil)
+        x = torch.cat((pos, x_vel, t_exp, surf), dim=2)
 
         for linear, norm, activation in zip(self.linears, self.norms, self.activations):
             x = activation(norm(linear(self.dropout(x))))

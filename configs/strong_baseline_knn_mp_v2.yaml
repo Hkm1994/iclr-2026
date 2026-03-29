@@ -1,0 +1,61 @@
+# strong_mlp_knn_mp_v2: two MP blocks + attention-weighted edge agg + rich edges
+# (rel velocity, inv dist). First trunk dim = raw_feature_dim (58) + 2 * mp_hidden_dim (256) = 314.
+
+experiment:
+  mlflow_experiment_name: gram-warped-ifw-strong
+
+paths:
+  data_split: configs/data_split.yaml
+  eval_protocol: configs/eval_protocol.yaml
+
+train:
+  model: strong_mlp_knn_mp_v2
+  model_family: strong_mlp_knn_mp_v2
+  lr: 0.0003
+  weight_decay: 0.025
+  batch_size: 1
+  grad_accum_steps: 1
+  train_subsample_N: 8192
+  train_point_seed: 0
+  eval_preforward_subsample_N: 8192
+  device: mps
+
+  model_config:
+    mp_hidden_dim: 128
+    dropout_probability: 0.15
+    num_channels: [314, 512, 512, 256]
+
+  # Optional: upweight high temporal-fluctuation points (mean weight 1). 0 = plain MSE.
+  loss_turb_weight_alpha: 0.0
+  # Optional: per-output-timestep MSE weights length 5; omit or null for uniform.
+  loss_timestep_weights: null
+
+  lr_warmup_epochs: 0
+  lr_schedule:
+    type: plateau
+    mode: min
+    factor: 0.5
+    patience: 3
+    min_lr: 1.0e-7
+    threshold: 1.0e-4
+
+  eval_test_at_end: true
+  max_epochs: 200
+  min_epochs: 20
+  early_stopping_patience: 10
+  early_stopping_min_delta: 1.0e-2
+  early_stopping_monitor: val/l2_per_point_mean
+  early_stopping_lower_is_better: null
+
+  best_checkpoint_path: checkpoints/strong_mlp_knn_mp_v2_best.pt
+  last_checkpoint_path: checkpoints/strong_mlp_knn_mp_v2_last.pt
+  heartbeat_seconds: 180
+  verbose: true
+  log_every_n_train_batches: 100
+  log_every_n_val_batches: 100
+  max_train_steps: null
+  max_val_steps: null
+
+  # Optional EMA of weights for eval (shadow copy; optimizer updates raw weights).
+  use_ema: false
+  ema_decay: 0.999
