@@ -64,6 +64,7 @@ Names are defined in **`models/registry.py`**: `tiny_linear`, `mlp`, `strong_mlp
 
 ## Related docs
 
+- **Model variants (diagram + design rationale):** `docs/MODEL_LINEAGE.md`
 - **Short repo tour:** `docs/SIMPLIFIED_README.md`
 - **Setup & HF login:** `docs/SETUP_NEW_MACHINE.md`
 - **Split modes and `id_key`:** `docs/SPLIT_CONFIGURATION.md`

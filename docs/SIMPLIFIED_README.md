@@ -71,4 +71,5 @@ iclr-2026/
 | MLflow, configs, leaderboard | [EXPERIMENTS_AND_MLFLOW.md](EXPERIMENTS_AND_MLFLOW.md) |
 | Full pipeline + HF loader | [CODEBASE_OVERVIEW.md](CODEBASE_OVERVIEW.md) |
 | Add a model | [ADDING_A_MODEL.md](ADDING_A_MODEL.md) |
+| Model family / why each variant | [MODEL_LINEAGE.md](MODEL_LINEAGE.md) |
 | Before opening a PR | [SUBMISSION_CHECKLIST.md](SUBMISSION_CHECKLIST.md) |

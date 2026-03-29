@@ -20,6 +20,7 @@ This repo includes a small training pipeline: **Hugging Face streaming**, centra
 - **Pipeline & HF data flow (detailed):** [docs/CODEBASE_OVERVIEW.md](docs/CODEBASE_OVERVIEW.md)
 - **Splits & seeds:** [docs/SPLIT_CONFIGURATION.md](docs/SPLIT_CONFIGURATION.md)
 - **New models:** [docs/ADDING_A_MODEL.md](docs/ADDING_A_MODEL.md)
+- **Model lineage (diagram + rationale):** [docs/MODEL_LINEAGE.md](docs/MODEL_LINEAGE.md)
 - **Experiments / MLflow:** [docs/EXPERIMENTS_AND_MLFLOW.md](docs/EXPERIMENTS_AND_MLFLOW.md)
 - **Pre-PR checks:** [docs/SUBMISSION_CHECKLIST.md](docs/SUBMISSION_CHECKLIST.md)
 
