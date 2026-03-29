@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 mlruns/
+leaderboard_outputs/
 *.egg-info/
 .DS_Store
 .env

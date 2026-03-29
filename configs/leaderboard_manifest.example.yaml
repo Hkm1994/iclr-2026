@@ -1,0 +1,22 @@
+# Example manifest for scripts/leaderboard.py
+# Run: python scripts/leaderboard.py --manifest configs/leaderboard_manifest.example.yaml
+
+# Metric key present in evaluation results (default: test/l2_per_point_mean)
+rank_metric: test/l2_per_point_mean
+
+# If omitted, taken from eval_protocol.yaml of the first entry's training config
+lower_is_better: true
+
+entries:
+  - label: strong_mlp_knn_best
+    training_config: configs/strong_baseline_knn.yaml
+    checkpoint: checkpoints/strong_mlp_knn_best.pt
+
+  - label: strong_mlp_best
+    training_config: configs/strong_baseline.yaml
+    checkpoint: checkpoints/strong_mlp_best.pt
+
+  # Uncomment after training configs/strong_baseline_knn_mp.yaml
+  # - label: strong_mlp_knn_mp_best
+  #   training_config: configs/strong_baseline_knn_mp.yaml
+  #   checkpoint: checkpoints/strong_mlp_knn_mp_best.pt

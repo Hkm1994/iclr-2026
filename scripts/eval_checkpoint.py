@@ -17,21 +17,11 @@ from training.hf_progress import silence_hf_download_progress
 silence_hf_download_progress()
 
 import mlflow
-import torch
 
-from models.registry import get_model_class
-from training.epoch_loop import evaluate_split_full
+from training.eval_runner import evaluate_checkpoint_on_test
 from training.memory_utils import release_training_memory
-from training.mlflow_steps import new_stream_counters
 from training.seeds import seed_all
 from training.yaml_config import load_yaml
-
-
-def _device_from_cfg(train_cfg: dict) -> torch.device:
-    d = train_cfg.get("device")
-    if d:
-        return torch.device(d)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def _positive_int_or_none(x) -> int | None:
@@ -72,8 +62,8 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    cfg_path = Path(args.config)
-    ckpt_path = Path(args.checkpoint)
+    cfg_path = Path(args.config).resolve()
+    ckpt_path = Path(args.checkpoint).resolve()
     cfg = load_yaml(cfg_path)
     paths = cfg["paths"]
     train_cfg = cfg["train"]
@@ -84,32 +74,17 @@ def main() -> int:
         return 1
 
     data_split_path = Path(paths["data_split"])
-    eval_path = Path(paths["eval_protocol"])
+    if not data_split_path.is_absolute():
+        data_split_path = (_REPO_ROOT / data_split_path).resolve()
     ds_cfg = load_yaml(data_split_path)
-    ev_cfg = load_yaml(eval_path)
     master_seed = int(ds_cfg["seed"])
     seed_all(master_seed)
 
-    device = _device_from_cfg(train_cfg)
-    model_name = train_cfg["model"]
-    model_cls = get_model_class(model_name)
-    model_cfg: dict = {"skip_weights": True}
-    extra_mc = train_cfg.get("model_config")
-    if isinstance(extra_mc, dict):
-        model_cfg.update(extra_mc)
-    model_cfg["skip_weights"] = True
-    model = model_cls(config=model_cfg)
-    state = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    model.load_state_dict(state)
-    model = model.to(device)
-    model.eval()
+    eval_path = Path(paths["eval_protocol"])
+    if not eval_path.is_absolute():
+        eval_path = (_REPO_ROOT / eval_path).resolve()
+    ev_cfg = load_yaml(eval_path)
 
-    batch_size = int(train_cfg.get("batch_size", 1))
-    eval_sub = ev_cfg.get("eval_subsample_N")
-    eval_seed = int(ev_cfg.get("eval_point_subsample_seed", 0))
-    eval_preforward_subsample_N = _positive_int_or_none(
-        train_cfg.get("eval_preforward_subsample_N")
-    )
     verbose = bool(train_cfg.get("verbose", True)) and not args.quiet
     log_every_val = _positive_int_or_none(
         train_cfg.get(
@@ -123,6 +98,10 @@ def main() -> int:
         heartbeat_seconds = float(hb_raw)
         if heartbeat_seconds <= 0:
             heartbeat_seconds = None
+
+    eval_sub = ev_cfg.get("eval_subsample_N")
+    eval_preforward_subsample_N = train_cfg.get("eval_preforward_subsample_N")
+    model_name = train_cfg["model"]
 
     mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "file:./mlruns"))
     mlflow.set_experiment(exp_cfg.get("mlflow_experiment_name", "gram-warped-ifw"))
@@ -140,14 +119,12 @@ def main() -> int:
         "eval_protocol_version": str(ev_cfg.get("version", "unknown")),
         "eval_subsample_N": eval_sub if eval_sub is not None else "full",
         "eval_preforward_subsample_N": (
-            eval_preforward_subsample_N
+            _positive_int_or_none(eval_preforward_subsample_N)
             if eval_preforward_subsample_N is not None
             else "off"
         ),
         "seed": master_seed,
     }
-
-    stream_steps = new_stream_counters()
 
     existing = os.environ.get("MLFLOW_RUN_ID")
     if existing:
@@ -165,28 +142,23 @@ def main() -> int:
             mlflow.log_artifact(str(cfg_path), artifact_path="config")
         if verbose:
             print(
-                f"Eval-only | model={model_name} device={device} | "
+                f"Eval-only | model={model_name} | "
                 f"checkpoint={ckpt_path} | data_split={data_split_path}",
                 flush=True,
             )
 
-        test_mse, test_l2, n_te, test_lt = evaluate_split_full(
-            model=model,
-            data_split_path=data_split_path,
-            device=device,
-            batch_size=batch_size,
-            eval_subsample_N=eval_sub,
-            eval_seed=eval_seed,
-            phase="test",
-            epoch_idx=0,
-            log_every_n_batches=log_every_val,
-            verbose=verbose,
-            heartbeat_seconds=heartbeat_seconds,
-            eval_stream_step_counter=stream_steps.test_batch,
-            run_label="held-out test (eval_checkpoint)",
-            eval_preforward_subsample_N=eval_preforward_subsample_N,
-        )
+        try:
+            results = evaluate_checkpoint_on_test(
+                training_config_path=cfg_path,
+                checkpoint_path=ckpt_path,
+                verbose=verbose,
+                log_every_n_batches=log_every_val,
+                heartbeat_seconds=heartbeat_seconds,
+            )
+        finally:
+            release_training_memory()
 
+        n_te = int(results["n_test_batches"])
         if n_te == 0:
             print(
                 "No test batches (set split.hash_ids.test_fraction > 0 in data_split.yaml).",
@@ -194,12 +166,19 @@ def main() -> int:
             )
             return 1
 
-        ts = stream_steps.test_batch[0]
+        test_mse = results["test/mse_velocity"]
+        test_l2 = results["test/l2_per_point_mean"]
+        ts = int(results["mlflow_step"])
         mlflow.log_metric("test/mse_velocity", test_mse, step=ts)
         mlflow.log_metric("test/l2_per_point_mean", test_l2, step=ts)
         mlflow.log_metric("test/batches", float(n_te), step=ts)
-        for k, v in test_lt.items():
-            mlflow.log_metric(k, v, step=ts)
+        for k, v in results.items():
+            if k.startswith("test/") and k not in (
+                "test/mse_velocity",
+                "test/l2_per_point_mean",
+            ):
+                if isinstance(v, (int, float)):
+                    mlflow.log_metric(k, float(v), step=ts)
 
         if verbose:
             print(
@@ -208,7 +187,6 @@ def main() -> int:
                 flush=True,
             )
 
-    release_training_memory()
     print("Done. MLflow UI: mlflow ui --backend-store-uri ./mlruns", flush=True)
     return 0
 
