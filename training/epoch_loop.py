@@ -13,8 +13,12 @@ from training.hf_dataset import SplitPhase, streaming_batches, subsample_batch_p
 from training.memory_utils import release_training_memory
 from training.metrics import (
     l2_per_point_mean,
+    l2_per_timestep_mean,
+    l2_per_timestep_mean_masked,
     lam_turb_mask_for_eval_subset,
     mse_l2_lam_turb_on_subset,
+    mse_per_timestep_mean,
+    mse_per_timestep_mean_masked,
     mse_velocity,
     subsample_points,
 )
@@ -177,6 +181,11 @@ def evaluate_split_full(
     contains epoch-mean proxy KPIs ``{tag}/mse_lam_proxy``, ``{tag}/mse_turb_proxy``,
     and L2 counterparts (median split on temporal fluctuation within the subsample).
 
+    Always (when at least one batch): per-output-timestep means
+    ``{tag}/l2_timestep_{i}_mean`` and ``{tag}/mse_timestep_{i}_mean``.
+    With lam/turb KPIs, also ``{tag}/l2_lam_timestep_*``, ``{tag}/mse_lam_timestep_*``,
+    and turb counterparts averaged over batches where the respective mask is non-empty.
+
     If ``eval_preforward_subsample_N`` is set, points are subsampled (same RNG stream as
     metric subsampling) before ``forward``, so kNN-style models see the same scale as
     training-time ``train_subsample_N``.
@@ -193,6 +202,14 @@ def evaluate_split_full(
     lt_mse_lam_sum = lt_mse_turb_sum = 0.0
     lt_l2_lam_sum = lt_l2_turb_sum = 0.0
     n_lt_mse_lam = n_lt_mse_turb = n_lt_l2_lam = n_lt_l2_turb = 0
+    ts_l2_sum: torch.Tensor | None = None
+    ts_mse_sum: torch.Tensor | None = None
+    ts_l2_lam_sum: torch.Tensor | None = None
+    ts_l2_turb_sum: torch.Tensor | None = None
+    ts_mse_lam_sum: torch.Tensor | None = None
+    ts_mse_turb_sum: torch.Tensor | None = None
+    n_batch_lam_ts = 0
+    n_batch_turb_ts = 0
     hb_last = time.monotonic()
     it = streaming_batches(
         data_split_path,
@@ -241,11 +258,45 @@ def evaluate_split_full(
                 p, tgt = subsample_points(
                     pred, batch.velocity_out, eval_subsample_N, generator=g
                 )
+                lam_m = None
             mse_b = float(mse_velocity(p, tgt).cpu())
             l2_b = float(l2_per_point_mean(p, tgt).cpu())
             mse_acc += mse_b
             l2_acc += l2_b
             n += 1
+
+            lt2 = l2_per_timestep_mean(p, tgt).detach().cpu()
+            mt2 = mse_per_timestep_mean(p, tgt).detach().cpu()
+            if ts_l2_sum is None:
+                ts_l2_sum = lt2.clone()
+                ts_mse_sum = mt2.clone()
+            else:
+                ts_l2_sum += lt2
+                ts_mse_sum += mt2
+            if lam_turb_kpis and lam_m is not None:
+                if lam_m.any():
+                    if ts_l2_lam_sum is None:
+                        ts_l2_lam_sum = torch.zeros_like(lt2)
+                        ts_mse_lam_sum = torch.zeros_like(mt2)
+                    ts_l2_lam_sum += l2_per_timestep_mean_masked(
+                        p, tgt, lam_m
+                    ).detach().cpu()
+                    ts_mse_lam_sum += mse_per_timestep_mean_masked(
+                        p, tgt, lam_m
+                    ).detach().cpu()
+                    n_batch_lam_ts += 1
+                turb_m = ~lam_m
+                if turb_m.any():
+                    if ts_l2_turb_sum is None:
+                        ts_l2_turb_sum = torch.zeros_like(lt2)
+                        ts_mse_turb_sum = torch.zeros_like(mt2)
+                    ts_l2_turb_sum += l2_per_timestep_mean_masked(
+                        p, tgt, turb_m
+                    ).detach().cpu()
+                    ts_mse_turb_sum += mse_per_timestep_mean_masked(
+                        p, tgt, turb_m
+                    ).detach().cpu()
+                    n_batch_turb_ts += 1
 
             eval_stream_step_counter[0] += 1
             step = eval_stream_step_counter[0]
@@ -316,6 +367,29 @@ def evaluate_split_full(
                 extra[f"{tag}/l2_lam_proxy"] = lt_l2_lam_sum / n_lt_l2_lam
             if n_lt_l2_turb:
                 extra[f"{tag}/l2_turb_proxy"] = lt_l2_turb_sum / n_lt_l2_turb
+        if ts_l2_sum is not None and n > 0:
+            tn = int(ts_l2_sum.shape[0])
+            for ti in range(tn):
+                extra[f"{tag}/l2_timestep_{ti}_mean"] = float(ts_l2_sum[ti] / n)
+                extra[f"{tag}/mse_timestep_{ti}_mean"] = float(ts_mse_sum[ti] / n)
+        if ts_l2_lam_sum is not None and n_batch_lam_ts > 0:
+            tn = int(ts_l2_lam_sum.shape[0])
+            for ti in range(tn):
+                extra[f"{tag}/l2_lam_timestep_{ti}_mean"] = float(
+                    ts_l2_lam_sum[ti] / n_batch_lam_ts
+                )
+                extra[f"{tag}/mse_lam_timestep_{ti}_mean"] = float(
+                    ts_mse_lam_sum[ti] / n_batch_lam_ts
+                )
+        if ts_l2_turb_sum is not None and n_batch_turb_ts > 0:
+            tn = int(ts_l2_turb_sum.shape[0])
+            for ti in range(tn):
+                extra[f"{tag}/l2_turb_timestep_{ti}_mean"] = float(
+                    ts_l2_turb_sum[ti] / n_batch_turb_ts
+                )
+                extra[f"{tag}/mse_turb_timestep_{ti}_mean"] = float(
+                    ts_mse_turb_sum[ti] / n_batch_turb_ts
+                )
         return mean_mse, mean_l2, n, extra
     finally:
         release_training_memory()

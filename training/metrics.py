@@ -29,6 +29,43 @@ def l2_per_point_mean(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return (pred - target).norm(dim=-1).mean()
 
 
+def l2_per_timestep_mean(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Mean L2 per output timestep, averaged over batch and points. ``(B,T,N,3)`` -> ``(T,)``."""
+    return (pred - target).norm(dim=-1).mean(dim=(0, 2))
+
+
+def mse_per_timestep_mean(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Per-timestep MSE, mean over batch, points, and vector components. ``(B,T,N,3)`` -> ``(T,)``."""
+    return F.mse_loss(pred, target, reduction="none").mean(dim=(0, 2, 3))
+
+
+def l2_per_timestep_mean_masked(
+    pred: torch.Tensor, target: torch.Tensor, point_mask: torch.Tensor
+) -> torch.Tensor:
+    """
+    Mean L2 per timestep over points where ``point_mask`` is True.
+    ``pred``/``target`` ``(B,T,N,3)``, mask ``(B,N)``. Supports ``B==1`` (eval).
+    """
+    if pred.shape[0] != 1:
+        raise NotImplementedError("l2_per_timestep_mean_masked supports batch_size=1")
+    m = point_mask[0].float()
+    d = (pred[0] - target[0]).norm(dim=-1)
+    den = m.sum().clamp(min=1.0)
+    return (d * m.unsqueeze(0)).sum(dim=1) / den
+
+
+def mse_per_timestep_mean_masked(
+    pred: torch.Tensor, target: torch.Tensor, point_mask: torch.Tensor
+) -> torch.Tensor:
+    """Per-timestep MSE over masked points; ``B==1`` only."""
+    if pred.shape[0] != 1:
+        raise NotImplementedError("mse_per_timestep_mean_masked supports batch_size=1")
+    m = point_mask[0].float()
+    err = (pred[0] - target[0]).pow(2).mean(dim=-1)
+    den = m.sum().clamp(min=1.0)
+    return (err * m.unsqueeze(0)).sum(dim=1) / den
+
+
 def subsample_points(
     pred: torch.Tensor,
     target: torch.Tensor,
