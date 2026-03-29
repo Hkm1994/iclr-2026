@@ -16,6 +16,8 @@ Deadline is on **April 22, 2026 (AoE)**.
 This repo includes a small training pipeline: **Hugging Face streaming**, central **`configs/data_split.yaml`** / **`configs/eval_protocol.yaml`**, **MLflow** logging, and **pytest** for the submission contract.
 
 - **Setup:** [docs/SETUP_NEW_MACHINE.md](docs/SETUP_NEW_MACHINE.md)
+- **Repo layout & code flow (short):** [docs/SIMPLIFIED_README.md](docs/SIMPLIFIED_README.md)
+- **Pipeline & HF data flow (detailed):** [docs/CODEBASE_OVERVIEW.md](docs/CODEBASE_OVERVIEW.md)
 - **Splits & seeds:** [docs/SPLIT_CONFIGURATION.md](docs/SPLIT_CONFIGURATION.md)
 - **New models:** [docs/ADDING_A_MODEL.md](docs/ADDING_A_MODEL.md)
 - **Experiments / MLflow:** [docs/EXPERIMENTS_AND_MLFLOW.md](docs/EXPERIMENTS_AND_MLFLOW.md)

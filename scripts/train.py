@@ -39,14 +39,8 @@ from training.train_checkpointing import (
     register_interrupt_checkpoint,
     save_state_dict_atomic,
 )
+from training.device_utils import resolve_train_device
 from training.yaml_config import load_yaml
-
-
-def _device_from_cfg(train_cfg: dict) -> torch.device:
-    d = train_cfg.get("device")
-    if d:
-        return torch.device(d)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def _positive_int_or_none(x) -> int | None:
@@ -465,7 +459,7 @@ def main() -> int:
     master_seed = int(ds_cfg["seed"])
     seed_all(master_seed)
 
-    device = _device_from_cfg(train_cfg)
+    device = resolve_train_device(train_cfg)
     model_name = train_cfg["model"]
     model_cls = get_model_class(model_name)
 

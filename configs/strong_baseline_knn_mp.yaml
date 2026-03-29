@@ -19,7 +19,7 @@ train:
   train_subsample_N: 8192
   train_point_seed: 0
   eval_preforward_subsample_N: 8192
-  device: null
+  device: mps
 
   model_config:
     mp_hidden_dim: 128

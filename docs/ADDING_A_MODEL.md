@@ -28,6 +28,8 @@ from models.your_model.model import YourModel
 MODELS["your_model"] = YourModel
 ```
 
+Current keys: `tiny_linear`, `mlp`, `strong_mlp`, `strong_mlp_knn`, `strong_mlp_knn_mp` (see `MODELS` in that file).
+
 ## Config
 
 Add `configs/example_your_model.yaml` pointing at:
@@ -42,4 +44,8 @@ Contract tests iterate `models.registry.MODELS`. If your model needs PyG, mark t
 
 ## Submission export
 
-See `docs/SUBMISSION_CHECKLIST.md` for promoting the best MLflow run to a PR-ready checkpoint.
+See [SUBMISSION_CHECKLIST.md](SUBMISSION_CHECKLIST.md) for promoting the best MLflow run to a PR-ready checkpoint.
+
+## See also
+
+[CODEBASE_OVERVIEW.md](CODEBASE_OVERVIEW.md) for how training pulls batches from Hugging Face and calls your `forward`.

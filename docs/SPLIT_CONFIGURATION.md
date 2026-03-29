@@ -24,4 +24,6 @@ Filtering happens while streaming; for very large corpora you may export id list
 
 ## Collate / point subsampling
 
-Training may use `train_subsample_N` in the **training YAML** (not in `data_split.yaml`). When subsampling points, the same index set is applied to `pos`, `velocity_in`, `velocity_out`, and surface indices are remapped (see `training/hf_dataset.py`).
+Training may use `train_subsample_N` in the **training YAML** (not in `data_split.yaml`). When subsampling points, the same index set is applied to `pos`, `velocity_in`, `velocity_out`, and surface indices are remapped (see `training/hf_dataset.py`). Optional `train.eval_preforward_subsample_N` subsamples points again before `forward` on val/test so models that depend on graph scale (e.g. kNN) see a consistent point count.
+
+For how rows are streamed from the Hub and turned into batches, see [CODEBASE_OVERVIEW.md](CODEBASE_OVERVIEW.md#hugging-face-data-path).

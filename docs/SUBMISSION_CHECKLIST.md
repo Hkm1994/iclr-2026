@@ -2,6 +2,8 @@
 
 Official rules: [README.md](../README.md) and [gram-competition/iclr-2026](https://github.com/gram-competition/iclr-2026).
 
+Training pipeline reference (HF loader, eval, leaderboard): [CODEBASE_OVERVIEW.md](CODEBASE_OVERVIEW.md).
+
 ## Organizer requirements
 
 - [ ] `model = YourModel()` — no required constructor args.

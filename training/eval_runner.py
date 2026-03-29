@@ -12,6 +12,7 @@ from training.epoch_loop import evaluate_split_full
 from training.memory_utils import release_training_memory
 from training.mlflow_steps import new_stream_counters
 from training.seeds import seed_all
+from training.device_utils import resolve_train_device
 from training.yaml_config import load_yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -20,13 +21,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 def _resolve_repo_path(p: str | Path) -> Path:
     pp = Path(p)
     return pp.resolve() if pp.is_absolute() else (_REPO_ROOT / pp).resolve()
-
-
-def _device_from_cfg(train_cfg: dict) -> torch.device:
-    d = train_cfg.get("device")
-    if d:
-        return torch.device(d)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def _positive_int_or_none(x: Any) -> int | None:
@@ -67,7 +61,7 @@ def evaluate_checkpoint_on_test(
     ev_cfg = load_yaml(eval_path)
     seed_all(int(ds_cfg["seed"]))
 
-    dev = device if device is not None else _device_from_cfg(train_cfg)
+    dev = device if device is not None else resolve_train_device(train_cfg)
     model_name = train_cfg["model"]
     model_cls = get_model_class(model_name)
     model_cfg: dict = {"skip_weights": True}

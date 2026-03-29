@@ -14,6 +14,8 @@ pip install -r requirements.txt
 
 - Install **PyTorch** for your platform if the default wheel is wrong: [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
 
+If you install a **CPU-only** build but your training YAML sets `train.device: cuda`, training will **fall back to CPU** with a warning (`training/device_utils.py`). Use `cuda` only when PyTorch has CUDA, or set `device: cpu` / omit `device` for auto CPU on non-GPU machines. See [CODEBASE_OVERVIEW.md](CODEBASE_OVERVIEW.md#configuration-layers).
+
 ## Optional graph extras
 
 ```bash
