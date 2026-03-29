@@ -5,6 +5,7 @@ from training.metrics import (
     lam_turb_mask_for_eval_subset,
     mse_l2_lam_turb_on_subset,
     mse_velocity,
+    mse_velocity_train_weighted,
     temporal_turbulence_proxy,
 )
 
@@ -12,6 +13,28 @@ from training.metrics import (
 def test_mse_velocity_zero_when_equal():
     x = torch.randn(2, 5, 64, 3)
     assert mse_velocity(x, x).item() == 0.0
+
+
+def test_mse_velocity_train_weighted_matches_plain_when_unweighted():
+    pred = torch.randn(1, 5, 32, 3)
+    tgt = torch.randn(1, 5, 32, 3)
+    vi = torch.randn(1, 5, 32, 3)
+    a = mse_velocity(pred, tgt)
+    b = mse_velocity_train_weighted(
+        pred, tgt, vi, turb_alpha=0.0, timestep_weights=None
+    )
+    assert torch.allclose(a, b)
+
+
+def test_mse_velocity_train_weighted_timestep_weights():
+    pred = torch.ones(1, 5, 4, 3)
+    tgt = torch.zeros(1, 5, 4, 3)
+    vi = torch.zeros(1, 5, 4, 3)
+    w = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0])
+    loss = mse_velocity_train_weighted(
+        pred, tgt, vi, turb_alpha=0.0, timestep_weights=w
+    )
+    assert loss.item() > 0
 
 
 def test_l2_per_point_mean_matches_manual():

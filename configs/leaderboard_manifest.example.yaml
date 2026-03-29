@@ -21,7 +21,7 @@ entries:
     checkpoint: checkpoints/strong_mlp_best.pt
 
 
-  # Uncomment after training configs/strong_baseline_knn_mp.yaml
-  # - label: strong_mlp_knn_mp_best
-  #   training_config: configs/strong_baseline_knn_mp.yaml
-  #   checkpoint: checkpoints/strong_mlp_knn_mp_best.pt
+  # Uncomment after training configs/strong_baseline_knn_mp_v2.yaml
+  # - label: strong_mlp_knn_mp_v2_best
+  #   training_config: configs/strong_baseline_knn_mp_v2.yaml
+  #   checkpoint: checkpoints/strong_mlp_knn_mp_v2_best.pt

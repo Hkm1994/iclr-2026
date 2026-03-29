@@ -31,8 +31,14 @@ from training.epoch_loop import (
 from training.lr_schedule import build_epoch_lr_scheduler, step_lr_scheduler
 from training.memory_utils import release_training_memory
 from training.mlflow_steps import new_stream_counters
+from training.ema import ModelEMA
 from training.hf_dataset import streaming_batches, subsample_batch_preforward
-from training.metrics import l2_per_point_mean, mse_velocity, subsample_points
+from training.metrics import (
+    l2_per_point_mean,
+    mse_velocity,
+    mse_velocity_train_weighted,
+    subsample_points,
+)
 from training.seeds import seed_all
 from training.mlflow_run_name import make_mlflow_run_name
 from training.train_checkpointing import (
@@ -72,6 +78,22 @@ def _point_subsample_options(train_cfg: dict, epoch_idx: int, max_epochs: int) -
     }
 
 
+def _save_checkpoint_with_optional_ema(
+    model: torch.nn.Module,
+    path: Path,
+    ema: ModelEMA | None,
+) -> None:
+    """When ``ema`` is set, saves shadow weights (same as used for val when EMA is on)."""
+    if ema is None:
+        save_state_dict_atomic(path, model)
+        return
+    backup = ema.swap_in_shadow(model)
+    try:
+        save_state_dict_atomic(path, model)
+    finally:
+        ema.restore(model, backup)
+
+
 def _run_legacy_step_training(
     *,
     model,
@@ -94,6 +116,9 @@ def _run_legacy_step_training(
     log_mlflow_train_every_n: int | None,
     last_ckpt_path: Path,
     heartbeat_seconds: float | None,
+    loss_turb_weight_alpha: float = 0.0,
+    loss_timestep_weights: torch.Tensor | None = None,
+    ema: ModelEMA | None = None,
 ) -> None:
     step = 0
     accum = 0
@@ -122,12 +147,20 @@ def _run_legacy_step_training(
 
     for batch in train_it:
         pred = model(batch.t, batch.pos, batch.idcs_airfoil, batch.velocity_in)
-        loss = mse_velocity(pred, batch.velocity_out)
+        loss = mse_velocity_train_weighted(
+            pred,
+            batch.velocity_out,
+            batch.velocity_in,
+            turb_alpha=loss_turb_weight_alpha,
+            timestep_weights=loss_timestep_weights,
+        )
         (loss / grad_accum).backward()
         accum += 1
         if accum >= grad_accum:
             opt.step()
             opt.zero_grad(set_to_none=True)
+            if ema is not None:
+                ema.update(model)
             accum = 0
         loss_f = float(loss.detach().cpu())
         if step == 0 or (step + 1) % mlflow_train == 0:
@@ -155,6 +188,8 @@ def _run_legacy_step_training(
     if accum > 0:
         opt.step()
         opt.zero_grad(set_to_none=True)
+        if ema is not None:
+            ema.update(model)
 
     if verbose:
         print(f"[legacy train] finished {step} optimizer steps", flush=True)
@@ -178,49 +213,56 @@ def _run_legacy_step_training(
     )
     if verbose:
         print(f"[legacy val] max_val_steps={max_val}", flush=True)
-    with torch.no_grad():
-        for batch in val_it:
-            if eval_preforward_subsample_N is not None:
-                batch = subsample_batch_preforward(batch, eval_preforward_subsample_N, g)
-            pred = model(batch.t, batch.pos, batch.idcs_airfoil, batch.velocity_in)
-            p, tgt = subsample_points(pred, batch.velocity_out, eval_sub, generator=g)
-            vm = mse_velocity(p, tgt)
-            vl = l2_per_point_mean(p, tgt)
-            val_mse_acc += float(vm.cpu())
-            val_l2_acc += float(vl.cpu())
-            val_count += 1
-            val_step += 1
-            if verbose and log_every_n_train_batches and (
-                val_count == 1 or val_count % log_every_n_train_batches == 0
-            ):
+    backup = ema.swap_in_shadow(model) if ema is not None else None
+    try:
+        with torch.no_grad():
+            for batch in val_it:
+                if eval_preforward_subsample_N is not None:
+                    batch = subsample_batch_preforward(
+                        batch, eval_preforward_subsample_N, g
+                    )
+                pred = model(batch.t, batch.pos, batch.idcs_airfoil, batch.velocity_in)
+                p, tgt = subsample_points(pred, batch.velocity_out, eval_sub, generator=g)
+                vm = mse_velocity(p, tgt)
+                vl = l2_per_point_mean(p, tgt)
+                val_mse_acc += float(vm.cpu())
+                val_l2_acc += float(vl.cpu())
+                val_count += 1
+                val_step += 1
+                if verbose and log_every_n_train_batches and (
+                    val_count == 1 or val_count % log_every_n_train_batches == 0
+                ):
+                    print(
+                        f"  [val] batch {val_count}/{max_val} mse={float(vm.cpu()):.6f} "
+                        f"l2={float(vl.cpu()):.6f}",
+                        flush=True,
+                    )
+                if heartbeat_seconds is not None and heartbeat_seconds > 0:
+                    now = time.monotonic()
+                    if now - hb_last >= heartbeat_seconds:
+                        if verbose:
+                            print(
+                                f"  [heartbeat] legacy val batch {val_count} (still running…)",
+                                flush=True,
+                            )
+                        hb_last = now
+                if val_step >= max_val:
+                    break
+
+        if val_count > 0:
+            vs = val_count
+            mlflow.log_metric("val/mse_velocity", val_mse_acc / val_count, step=vs)
+            mlflow.log_metric("val/l2_per_point_mean", val_l2_acc / val_count, step=vs)
+            if verbose:
                 print(
-                    f"  [val] batch {val_count}/{max_val} mse={float(vm.cpu()):.6f} "
-                    f"l2={float(vl.cpu()):.6f}",
+                    f"[legacy val] mean mse={val_mse_acc / val_count:.6f} "
+                    f"mean l2={val_l2_acc / val_count:.6f}",
                     flush=True,
                 )
-            if heartbeat_seconds is not None and heartbeat_seconds > 0:
-                now = time.monotonic()
-                if now - hb_last >= heartbeat_seconds:
-                    if verbose:
-                        print(
-                            f"  [heartbeat] legacy val batch {val_count} (still running…)",
-                            flush=True,
-                        )
-                    hb_last = now
-            if val_step >= max_val:
-                break
-
-    if val_count > 0:
-        vs = val_count
-        mlflow.log_metric("val/mse_velocity", val_mse_acc / val_count, step=vs)
-        mlflow.log_metric("val/l2_per_point_mean", val_l2_acc / val_count, step=vs)
-        if verbose:
-            print(
-                f"[legacy val] mean mse={val_mse_acc / val_count:.6f} "
-                f"mean l2={val_l2_acc / val_count:.6f}",
-                flush=True,
-            )
-    save_state_dict_atomic(last_ckpt_path, model)
+        save_state_dict_atomic(last_ckpt_path, model)
+    finally:
+        if backup is not None:
+            ema.restore(model, backup)
     release_training_memory()
 
 
@@ -252,6 +294,9 @@ def _run_epoch_training(
     last_ckpt_path: Path,
     heartbeat_seconds: float | None,
     eval_test_at_end: bool,
+    loss_turb_weight_alpha: float = 0.0,
+    loss_timestep_weights: torch.Tensor | None = None,
+    ema: ModelEMA | None = None,
 ) -> None:
     metric_keys = {
         "val/mse_velocity": "mse",
@@ -297,29 +342,37 @@ def _run_epoch_training(
             verbose=verbose,
             heartbeat_seconds=heartbeat_seconds,
             subsample_options=subsample_opts,
+            loss_turb_weight_alpha=loss_turb_weight_alpha,
+            loss_timestep_weights=loss_timestep_weights,
+            ema=ema,
         )
         if verbose:
             print(
                 f"--- Epoch {epoch + 1}/{max_epochs} | validation ---",
                 flush=True,
             )
-        val_mse, val_l2, n_val, val_lt = validate_full(
-            model=model,
-            data_split_path=data_split_path,
-            device=device,
-            batch_size=batch_size,
-            eval_subsample_N=eval_sub,
-            eval_seed=eval_seed,
-            epoch_idx=epoch,
-            log_every_n_batches=log_every_n_val_batches,
-            verbose=verbose,
-            heartbeat_seconds=heartbeat_seconds,
-            eval_stream_step_counter=stream_steps.val_batch,
-            eval_preforward_subsample_N=eval_preforward_subsample_N,
-        )
+        backup = ema.swap_in_shadow(model) if ema is not None else None
+        try:
+            val_mse, val_l2, n_val, val_lt = validate_full(
+                model=model,
+                data_split_path=data_split_path,
+                device=device,
+                batch_size=batch_size,
+                eval_subsample_N=eval_sub,
+                eval_seed=eval_seed,
+                epoch_idx=epoch,
+                log_every_n_batches=log_every_n_val_batches,
+                verbose=verbose,
+                heartbeat_seconds=heartbeat_seconds,
+                eval_stream_step_counter=stream_steps.val_batch,
+                eval_preforward_subsample_N=eval_preforward_subsample_N,
+            )
+        finally:
+            if backup is not None:
+                ema.restore(model, backup)
         if n_val == 0:
             print("Validation produced zero batches; check data_split and HF access.")
-            save_state_dict_atomic(last_ckpt_path, model)
+            _save_checkpoint_with_optional_ema(model, last_ckpt_path, ema)
             release_training_memory()
             break
 
@@ -356,7 +409,7 @@ def _run_epoch_training(
         if is_better(current, best, min_delta=min_delta, lower_is_better=lower_is_better):
             best = current
             epochs_without_improve = 0
-            save_state_dict_atomic(best_ckpt_path, model)
+            _save_checkpoint_with_optional_ema(model, best_ckpt_path, ema)
         else:
             epochs_without_improve += 1
         mlflow.log_metric(
@@ -372,7 +425,7 @@ def _run_epoch_training(
                 flush=True,
             )
 
-        save_state_dict_atomic(last_ckpt_path, model)
+        _save_checkpoint_with_optional_ema(model, last_ckpt_path, ema)
         release_training_memory()
 
         if epoch + 1 >= min_epochs and epochs_without_improve >= patience:
@@ -394,22 +447,27 @@ def _run_epoch_training(
     if eval_test_at_end:
         if verbose:
             print("\n=== Final pass: held-out test split (all test shards) ===", flush=True)
-        test_mse, test_l2, n_te, test_lt = evaluate_split_full(
-            model=model,
-            data_split_path=data_split_path,
-            device=device,
-            batch_size=batch_size,
-            eval_subsample_N=eval_sub,
-            eval_seed=eval_seed,
-            phase="test",
-            epoch_idx=0,
-            log_every_n_batches=log_every_n_val_batches,
-            verbose=verbose,
-            heartbeat_seconds=heartbeat_seconds,
-            eval_stream_step_counter=stream_steps.test_batch,
-            run_label="held-out test",
-            eval_preforward_subsample_N=eval_preforward_subsample_N,
-        )
+        backup_te = ema.swap_in_shadow(model) if ema is not None else None
+        try:
+            test_mse, test_l2, n_te, test_lt = evaluate_split_full(
+                model=model,
+                data_split_path=data_split_path,
+                device=device,
+                batch_size=batch_size,
+                eval_subsample_N=eval_sub,
+                eval_seed=eval_seed,
+                phase="test",
+                epoch_idx=0,
+                log_every_n_batches=log_every_n_val_batches,
+                verbose=verbose,
+                heartbeat_seconds=heartbeat_seconds,
+                eval_stream_step_counter=stream_steps.test_batch,
+                run_label="held-out test",
+                eval_preforward_subsample_N=eval_preforward_subsample_N,
+            )
+        finally:
+            if backup_te is not None:
+                ema.restore(model, backup_te)
         if n_te > 0:
             ts = stream_steps.test_batch[0]
             mlflow.log_metric("test/mse_velocity", test_mse, step=ts)
@@ -479,6 +537,26 @@ def main() -> int:
     lr = float(train_cfg.get("lr", 1e-4))
     wd = float(train_cfg.get("weight_decay", 0.0))
     opt = AdamW(model.parameters(), lr=lr, weight_decay=wd)
+
+    loss_turb_alpha = float(train_cfg.get("loss_turb_weight_alpha", 0.0))
+    ltw_raw = train_cfg.get("loss_timestep_weights")
+    loss_ts_tensor: torch.Tensor | None = None
+    if ltw_raw is not None:
+        loss_ts_tensor = torch.tensor(
+            [float(x) for x in ltw_raw], dtype=torch.float32, device=device
+        )
+        mc = train_cfg.get("model_config")
+        mc = mc if isinstance(mc, dict) else {}
+        nt = int(getattr(model, "num_output_timesteps", mc.get("num_output_timesteps", 5)))
+        if loss_ts_tensor.numel() != nt:
+            raise ValueError(
+                f"loss_timestep_weights length {loss_ts_tensor.numel()} != "
+                f"num_output_timesteps {nt}"
+            )
+    use_ema_cfg = bool(train_cfg.get("use_ema", False))
+    ema: ModelEMA | None = None
+    if use_ema_cfg:
+        ema = ModelEMA(model, float(train_cfg.get("ema_decay", 0.999)))
 
     batch_size = int(train_cfg.get("batch_size", 1))
     grad_accum = int(train_cfg.get("grad_accum_steps", 1))
@@ -582,6 +660,14 @@ def main() -> int:
     ls = train_cfg.get("lr_schedule")
     if ls:
         params["lr_schedule"] = repr(ls)
+    params["loss_turb_weight_alpha"] = loss_turb_alpha
+    params["loss_timestep_weights"] = (
+        [float(x) for x in ltw_raw] if ltw_raw is not None else "off"
+    )
+    params["use_ema"] = use_ema_cfg
+    params["ema_decay"] = (
+        float(train_cfg.get("ema_decay", 0.999)) if use_ema_cfg else "off"
+    )
 
     mlflow_run_name = make_mlflow_run_name(model_name, train_cfg, exp_cfg)
     params["mlflow_run_name"] = mlflow_run_name
@@ -660,6 +746,9 @@ def main() -> int:
                         eval_test_at_end=bool(
                             train_cfg.get("eval_test_at_end", True)
                         ),
+                        loss_turb_weight_alpha=loss_turb_alpha,
+                        loss_timestep_weights=loss_ts_tensor,
+                        ema=ema,
                     )
                 else:
                     max_train = args.max_train_steps or int(
@@ -687,6 +776,9 @@ def main() -> int:
                         log_mlflow_train_every_n=log_mlflow_train_every,
                         last_ckpt_path=last_ckpt,
                         heartbeat_seconds=heartbeat_seconds,
+                        loss_turb_weight_alpha=loss_turb_alpha,
+                        loss_timestep_weights=loss_ts_tensor,
+                        ema=ema,
                     )
             except KeyboardInterrupt:
                 save_state_dict_atomic(last_ckpt, model)

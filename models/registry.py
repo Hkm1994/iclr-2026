@@ -10,6 +10,7 @@ from models.mlp.model import MLP
 from models.strong_mlp.model import StrongMLP
 from models.strong_mlp_knn.model import StrongMLPKnn
 from models.strong_mlp_knn_mp.model import StrongMLPKnnMP
+from models.strong_mlp_knn_mp_v2.model import StrongMLPKnnMPv2
 from models.tiny_linear.model import TinyLinearBaseline
 
 MODELS: dict[str, Type[Module]] = {
@@ -18,6 +19,7 @@ MODELS: dict[str, Type[Module]] = {
     "strong_mlp": StrongMLP,
     "strong_mlp_knn": StrongMLPKnn,
     "strong_mlp_knn_mp": StrongMLPKnnMP,
+    "strong_mlp_knn_mp_v2": StrongMLPKnnMPv2,
 }
 
 

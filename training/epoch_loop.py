@@ -11,6 +11,7 @@ from torch.optim import Optimizer
 
 from training.hf_dataset import SplitPhase, streaming_batches, subsample_batch_preforward
 from training.memory_utils import release_training_memory
+from training.ema import ModelEMA
 from training.metrics import (
     l2_per_point_mean,
     l2_per_timestep_mean,
@@ -20,6 +21,7 @@ from training.metrics import (
     mse_per_timestep_mean,
     mse_per_timestep_mean_masked,
     mse_velocity,
+    mse_velocity_train_weighted,
     subsample_points,
 )
 
@@ -40,6 +42,9 @@ def train_one_epoch(
     verbose: bool = True,
     heartbeat_seconds: float | None = None,
     subsample_options: dict | None = None,
+    loss_turb_weight_alpha: float = 0.0,
+    loss_timestep_weights: torch.Tensor | None = None,
+    ema: ModelEMA | None = None,
 ) -> tuple[float, int]:
     """
     One full pass over the train split.
@@ -66,7 +71,13 @@ def train_one_epoch(
     try:
         for batch in it:
             pred = model(batch.t, batch.pos, batch.idcs_airfoil, batch.velocity_in)
-            loss = mse_velocity(pred, batch.velocity_out)
+            loss = mse_velocity_train_weighted(
+                pred,
+                batch.velocity_out,
+                batch.velocity_in,
+                turb_alpha=loss_turb_weight_alpha,
+                timestep_weights=loss_timestep_weights,
+            )
             (loss / grad_accum).backward()
             accum += 1
             loss_sum += float(loss.detach().cpu())
@@ -74,6 +85,8 @@ def train_one_epoch(
             if accum >= grad_accum:
                 opt.step()
                 opt.zero_grad(set_to_none=True)
+                if ema is not None:
+                    ema.update(model)
                 accum = 0
 
             train_stream_step_counter[0] += 1
@@ -141,6 +154,8 @@ def train_one_epoch(
         if accum > 0:
             opt.step()
             opt.zero_grad(set_to_none=True)
+            if ema is not None:
+                ema.update(model)
 
         mean_loss = loss_sum / max(n_batches, 1)
         if verbose:

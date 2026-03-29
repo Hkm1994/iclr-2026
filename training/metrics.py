@@ -24,6 +24,53 @@ def mse_velocity(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return F.mse_loss(pred, target)
 
 
+def mse_velocity_train_weighted(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    velocity_in: torch.Tensor,
+    *,
+    turb_alpha: float = 0.0,
+    timestep_weights: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Training MSE with optional per-output-timestep weights and optional turbulence
+    proxy upweighting: per point ``w = 1 + turb_alpha * (proxy / mean(proxy))``.
+
+    If ``turb_alpha == 0`` and ``timestep_weights is None``, equals ``mse_velocity``.
+    """
+    if turb_alpha == 0.0 and timestep_weights is None:
+        return mse_velocity(pred, target)
+
+    sq = (pred - target).pow(2)
+    b, t, n, _c = sq.shape
+    device, dtype = sq.device, sq.dtype
+
+    tw = (
+        timestep_weights.to(device=device, dtype=dtype).view(1, t, 1)
+        if timestep_weights is not None
+        else torch.ones(t, device=device, dtype=dtype).view(1, t, 1)
+    )
+    if timestep_weights is not None and timestep_weights.numel() != t:
+        raise ValueError(
+            f"loss_timestep_weights length {timestep_weights.numel()} != T_out {t}"
+        )
+
+    w_pts = torch.ones(b, n, device=device, dtype=dtype)
+    if turb_alpha > 0.0:
+        rows = []
+        for bi in range(b):
+            proxy = temporal_turbulence_proxy(velocity_in[bi])
+            m = proxy.mean().clamp(min=1e-8)
+            rows.append(1.0 + float(turb_alpha) * (proxy / m))
+        w_pts = torch.stack(rows, dim=0)
+
+    combined = tw * w_pts.unsqueeze(1)
+    w_exp = combined.unsqueeze(-1)
+    num = (sq * w_exp).sum()
+    den = w_exp.expand_as(sq).sum().clamp(min=1e-8)
+    return num / den
+
+
 def l2_per_point_mean(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """Mean L2 norm per velocity vector: mean over batch, time, points (like main.py hint)."""
     return (pred - target).norm(dim=-1).mean()
