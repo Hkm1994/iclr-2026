@@ -45,4 +45,64 @@ Loss functions
 Geometry-aware models
 
 
+pressure (10, 100000) — Pressure Field
 
+This is the pressure value at every mesh point over time.
+
+First dimension → time
+Second dimension → spatial points
+
+So:
+
+pressure[t, i] = pressure at point i at time t
+
+👉 In CFD:
+
+Pressure drives forces (e.g., lift, drag)
+
+👉 In ML:
+
+This is a node-level scalar field evolving over time
+Often used as:
+Input feature
+Target variable
+
+
+velocity_in (5, 100000, 3) — Past Velocity (Input)
+
+This represents the velocity field from previous time steps.
+
+5 → number of past time steps
+100000 → spatial points
+3 → velocity components (u, v, w)
+
+So:
+
+velocity_in[k, i, :] = velocity at point i at past timestep k
+
+👉 In CFD:
+
+Velocity describes how the fluid moves at each point
+
+👉 In ML:
+
+This is your input sequence
+Equivalent to:
+Time-series context
+“History” used for prediction
+
+
+velocity_out (5, 100000, 3) — Future Velocity (Target)
+
+This is the future velocity field the model is expected to predict.
+
+Same structure as velocity_in
+Represents forward evolution of the flow
+
+👉 In ML:
+
+This is your ground truth output
+
+The learning task is:
+
+Given past velocity → predict future velocity
