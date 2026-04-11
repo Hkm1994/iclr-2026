@@ -602,11 +602,21 @@ def main() -> int:
     data_split_version = str(ds_cfg.get("version", "unknown"))
     eval_version = str(ev_cfg.get("version", "unknown"))
 
+    dataset_block = ds_cfg.get("dataset") or {}
+    dataset_source = str(dataset_block.get("source", "hub"))
+    lp_raw = dataset_block.get("local_path")
+    if lp_raw:
+        dataset_local_path_logged = str(Path(str(lp_raw)).expanduser().resolve())
+    else:
+        dataset_local_path_logged = "off"
+
     params = {
         "model_family": train_cfg.get("model_family", model_name),
         "model": model_name,
         "data_split_version": data_split_version,
         "eval_protocol_version": eval_version,
+        "dataset_source": dataset_source,
+        "dataset_local_path": dataset_local_path_logged,
         "seed": master_seed,
         "lr": lr,
         "weight_decay": wd,

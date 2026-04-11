@@ -11,7 +11,11 @@ import torch
 from datasets import load_dataset
 
 from training.explicit_ids import load_id_set
-from training.hf_npz_hub import hub_dataset_has_only_npz_error, iter_npz_root_samples
+from training.hf_npz_hub import (
+    hub_dataset_has_only_npz_error,
+    iter_npz_local_samples,
+    iter_npz_root_samples,
+)
 from training.metrics import temporal_turbulence_proxy
 from training.split_assign import assign_phase_hash_ids, get_sample_id
 from training.yaml_config import load_yaml
@@ -266,15 +270,31 @@ def _open_hf_table_stream(repo: str, split_name: str, rev: str | None):
     return load_dataset(repo, **kw)
 
 
-def _npz_row_stream(
-    repo: str,
-    rev: str | None,
+def _npz_row_stream_from_cfg(
+    cfg: dict[str, Any],
     phase: SplitPhase,
     master_seed: int,
 ) -> Iterator[dict[str, Any]]:
+    ds_block = cfg["dataset"]
+    source = ds_block.get("source", "hub")
+    repo = ds_block["repo_id"]
+    rev = ds_block.get("revision") or None
     shuffle = phase == "train"
     rng = np.random.default_rng(master_seed + {"train": 11, "val": 13, "test": 17}[phase])
-    yield from iter_npz_root_samples(repo, revision=rev, shuffle=shuffle, rng=rng if shuffle else None)
+    if source == "hub":
+        yield from iter_npz_root_samples(
+            repo, revision=rev, shuffle=shuffle, rng=rng if shuffle else None
+        )
+        return
+    if source == "local":
+        lp = ds_block.get("local_path")
+        if not lp:
+            raise ValueError("dataset.local_path is required when dataset.source is 'local'")
+        yield from iter_npz_local_samples(
+            lp, shuffle=shuffle, rng=rng if shuffle else None
+        )
+        return
+    raise ValueError(f"dataset.source must be 'hub' or 'local', got {source!r}")
 
 
 def build_stream(
@@ -285,19 +305,31 @@ def build_stream(
     repo = cfg["dataset"]["repo_id"]
     rev = cfg["dataset"].get("revision") or None
     layout = cfg["dataset"].get("layout", "auto")
+    source = cfg["dataset"].get("source", "hub")
     split_block = cfg["split"]
     mode = split_block["mode"]
     id_key = cfg["id_key"]
     master_seed = int(cfg["seed"])
 
     def _resolve_row_iter(*, hf_split_name: str) -> Iterator[dict[str, Any]]:
+        if source == "local" and layout == "hub_table":
+            raise ValueError(
+                "dataset.layout 'hub_table' is incompatible with dataset.source 'local'. "
+                "Use layout 'npz' or 'auto', or use source 'hub'."
+            )
+        if source == "local" and mode == "hf_native":
+            raise ValueError(
+                "split.mode 'hf_native' requires Hugging Face named splits; "
+                "use dataset.source 'hub' or use hash_ids / explicit_lists with local .npz."
+            )
+
         if layout == "npz":
             if mode == "hf_native":
                 raise ValueError(
                     "split.mode hf_native is not supported for dataset.layout npz "
                     "(Hub repo has no named splits; use hash_ids or explicit_lists)."
                 )
-            return _npz_row_stream(repo, rev, phase, master_seed)
+            return _npz_row_stream_from_cfg(cfg, phase, master_seed)
         if layout == "hub_table":
             ds = _open_hf_table_stream(repo, hf_split_name, rev)
             return iter(ds)
@@ -306,13 +338,15 @@ def build_stream(
         if mode == "hf_native":
             ds = _open_hf_table_stream(repo, hf_split_name, rev)
             return iter(ds)
+        if source == "local":
+            return _npz_row_stream_from_cfg(cfg, phase, master_seed)
         try:
             ds = _open_hf_table_stream(repo, hf_split_name, rev)
             return iter(ds)
         except Exception as e:
             if not hub_dataset_has_only_npz_error(e):
                 raise
-            return _npz_row_stream(repo, rev, phase, master_seed)
+            return _npz_row_stream_from_cfg(cfg, phase, master_seed)
 
     if mode == "hf_native":
         name = _split_name_for_phase(cfg, phase)

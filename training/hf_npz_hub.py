@@ -32,12 +32,53 @@ def sample_id_from_dataset_relpath(rel_path: str) -> str:
     return str(p.with_suffix("")).replace("\\", "/").replace("/", "-")
 
 
+def resolve_local_dataset_root(local_path: str | Path) -> Path:
+    """Resolve ``local_path`` relative to cwd when not absolute (expanduser first)."""
+    root = Path(str(local_path)).expanduser()
+    if not root.is_absolute():
+        root = (Path.cwd() / root).resolve()
+    else:
+        root = root.resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"dataset.local_path is not a directory: {root}")
+    return root
+
+
+def list_npz_relpaths_local(root: Path | str) -> list[str]:
+    """Recursive ``*.npz`` under ``root``; POSIX relpaths from root, sorted."""
+    r = resolve_local_dataset_root(root)
+    paths = sorted(r.rglob("*.npz"))
+    if not paths:
+        raise FileNotFoundError(f"No .npz files under {r}")
+    return [p.relative_to(r).as_posix() for p in paths]
+
+
 def row_from_npz_path(path: str | Path) -> dict[str, Any]:
     path = Path(path)
     with np.load(path, allow_pickle=False) as data:
         row = {k: np.asarray(data[k]) for k in data.files}
     row["sample_id"] = path.stem
     return row
+
+
+def iter_npz_local_samples(
+    root: Path | str,
+    *,
+    shuffle: bool = False,
+    rng: np.random.Generator | None = None,
+) -> Iterator[dict[str, Any]]:
+    r = resolve_local_dataset_root(root)
+    rels = list_npz_relpaths_local(r)
+    order = list(rels)
+    if shuffle:
+        if rng is None:
+            raise ValueError("shuffle=True requires rng")
+        rng.shuffle(order)
+    for rel in order:
+        path = r / rel
+        row = row_from_npz_path(path)
+        row["sample_id"] = sample_id_from_dataset_relpath(rel)
+        yield row
 
 
 def npz_row_from_hub_file(
@@ -92,3 +133,12 @@ def load_first_npz_row(
             f"No .npz files in dataset repo {repo_id!r} (check access and revision)."
         )
     return npz_row_from_hub_file(repo_id, files[0], revision=revision)
+
+
+def load_first_npz_row_local(root: Path | str) -> dict[str, Any]:
+    r = resolve_local_dataset_root(root)
+    rels = list_npz_relpaths_local(r)
+    path = r / rels[0]
+    row = row_from_npz_path(path)
+    row["sample_id"] = sample_id_from_dataset_relpath(rels[0])
+    return row

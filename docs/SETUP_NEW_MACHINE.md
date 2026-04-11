@@ -24,6 +24,10 @@ pip install -r requirements-extras.txt
 
 Follow [PyG install](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html) if `torch-geometric` fails.
 
+## Offline / local data (optional)
+
+If you downloaded the dataset to a folder (e.g. `huggingface-cli download … --local-dir data/warped-ifw`), set in `configs/data_split.yaml` under `dataset:` **`source: local`** and **`local_path: …`** (see [SPLIT_CONFIGURATION.md](SPLIT_CONFIGURATION.md)). Run training from the repo root if using a relative path. No HF access is required at train time for that mode.
+
 ## Hugging Face
 
 1. [Create a token](https://huggingface.co/settings/tokens) and accept the dataset terms on [gram-competition/warped-ifw](https://huggingface.co/datasets/gram-competition/warped-ifw).

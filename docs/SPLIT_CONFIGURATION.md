@@ -1,5 +1,20 @@
 # Data split configuration (`configs/data_split.yaml`)
 
+## Local vs Hub (`dataset.source`)
+
+- **`source: hub`** (default): Load data from Hugging Face as today (`repo_id`, optional `revision`), using `layout` (`auto` / `hub_table` / `npz`).
+- **`source: local`**: Read **only** `.npz` files under **`dataset.local_path`** (recursive). No Hub download for samples; HF token not required for training. **`layout` must not be `hub_table`** (raise a clear error); use `layout: npz` or `layout: auto` (auto skips the Hub table attempt and uses local NPZ).
+- **`local_path`**: Directory containing the mirror (e.g. `data/warped-ifw` or `sample_data`). Relative paths are resolved against the **current working directory**—start training from the repository root (e.g. `local_path: sample_data`).
+- **`sample_id`**: For each file, the id matches the Hub convention `sample_id_from_dataset_relpath(relative_path)` so **`hash_ids` splits match** a faithful file tree mirror. Renaming or flattening files differently than the Hub will change assignments.
+
+Populate a mirror, for example:
+
+```bash
+huggingface-cli download gram-competition/warped-ifw --repo-type dataset --local-dir data/warped-ifw
+```
+
+See also [CODEBASE_OVERVIEW.md](CODEBASE_OVERVIEW.md#hugging-face-data-path).
+
 ## Modes
 
 - **`hf_native`**: Use named splits from the Hub (`train_split`, `val_split`, optional `test_split`). Use when the dataset publishes splits.
