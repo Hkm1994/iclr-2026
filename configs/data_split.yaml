@@ -16,7 +16,7 @@ dataset:
   source: hub
   # Directory of .npz shards (flat or nested). Relative paths use the process cwd (run train from repo root).
   # Example: sample_data or data/warped-ifw after `huggingface-cli download ... --local-dir data/warped-ifw`
-  local_path: null
+  local_path: sample_data
 
 # Unique id per training row. warped-ifw .npz layout injects sample_id from the file path.
 id_key: sample_id
