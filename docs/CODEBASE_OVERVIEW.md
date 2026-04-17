@@ -52,6 +52,8 @@ If `train.eval_preforward_subsample_N` is set, **`subsample_batch_preforward`** 
 |-------------|----------|
 | **`scripts/eval_checkpoint.py`** | Loads a `.pt` state dict with architecture from the same training YAML, runs the **test** split via **`training.eval_runner.evaluate_checkpoint_on_test`**, logs `test/*` to MLflow. Uses `resolve_train_device` when no device override is passed. |
 | **`scripts/leaderboard.py`** | Reads a manifest (see `configs/leaderboard_manifest.example.yaml`), evaluates multiple checkpoints on the test split, ranks by a metric (default `test/l2_per_point_mean`). Implementation uses **`training.eval_runner`** and **`training/leaderboard_rank.py`**. |
+| **`scripts/streamlit_inspect_predictions.py`** | Interactive **pred vs actual** inspection: config/checkpoint **dropdowns** (discovered under `configs/` and `checkpoints/`), matplotlib slices, **Plotly 3D** (color modes, \|v\| comparison, airfoil overlay, optional metric floor), GIF. See **`docs/INSPECT_PREDICTIONS.md`**. |
+| **`scripts/inspect_model_predictions.py`** | CLI summary + optional PNG exports (same diagnostics core). |
 
 ## Metrics and MLflow keys
 
@@ -70,6 +72,7 @@ Names are defined in **`models/registry.py`**: `tiny_linear`, `mlp`, `strong_mlp
 - **Split modes and `id_key`:** `docs/SPLIT_CONFIGURATION.md`
 - **MLflow usage and fair comparisons:** `docs/EXPERIMENTS_AND_MLFLOW.md`
 - **Submission:** `docs/SUBMISSION_CHECKLIST.md`
+- **Inspect predictions (Streamlit / CLI):** `docs/INSPECT_PREDICTIONS.md`
 
 ## Key file map
 
@@ -80,6 +83,7 @@ Names are defined in **`models/registry.py`**: `tiny_linear`, `mlp`, `strong_mlp
 | Loops + eval splits | `training/epoch_loop.py` |
 | Losses / metrics | `training/metrics.py` |
 | Checkpoint eval | `training/eval_runner.py`, `scripts/eval_checkpoint.py` |
+| Prediction diagnostics | `training/diagnostics_velocity.py`, `training/inspect_predictions_common.py`, `training/inspect_viz.py`, `training/inspect_plotly_3d.py` |
 | Leaderboard | `scripts/leaderboard.py`, `training/leaderboard_rank.py` |
 | Device resolution | `training/device_utils.py` |
 | YAML loading | `training/yaml_config.py` |

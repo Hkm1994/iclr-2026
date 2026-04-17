@@ -56,6 +56,8 @@ iclr-2026/
 | Script | Role |
 |--------|------|
 | `scripts/inspect_dataset.py` | Print Hub schema; set `id_key` in `data_split.yaml` |
+| `scripts/streamlit_inspect_predictions.py` | Interactive pred vs actual: config/checkpoint pickers, slices, Plotly 3D, GIF ([INSPECT_PREDICTIONS.md](INSPECT_PREDICTIONS.md)) |
+| `scripts/inspect_model_predictions.py` | CLI metrics + optional PNGs (same diagnostics core) |
 | `scripts/verify_submission_contract.py` | Check `main.py` / model contract |
 | `scripts/report_runs.py` | Summarize MLflow runs from the CLI |
 | `scripts/init_mlp_weights.py` | Generate MLP weights if missing |
@@ -73,3 +75,4 @@ iclr-2026/
 | Add a model | [ADDING_A_MODEL.md](ADDING_A_MODEL.md) |
 | Model family / why each variant | [MODEL_LINEAGE.md](MODEL_LINEAGE.md) |
 | Before opening a PR | [SUBMISSION_CHECKLIST.md](SUBMISSION_CHECKLIST.md) |
+| Inspect predictions (Streamlit / CLI) | [INSPECT_PREDICTIONS.md](INSPECT_PREDICTIONS.md) |
