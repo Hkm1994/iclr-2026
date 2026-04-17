@@ -7,19 +7,64 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import torch
 
-from training.inspect_viz import decimate_mask, speed_magnitude
+from training.inspect_viz import speed_magnitude
+
+# Airfoil: fixed hue far from typical error/speed colormaps (Turbo, Inferno, Viridis, Plasma).
+_AIRFOIL_FACE = "#ff26d6"
+_AIRFOIL_EDGE = "#0d0d0d"
 
 
-def _color_values(
+def _airfoil_marker(*, size: float) -> dict:
+    return dict(
+        size=size,
+        color=_AIRFOIL_FACE,
+        opacity=1.0,
+        line=dict(width=1.6, color=_AIRFOIL_EDGE),
+    )
+
+
+def _field_decimate_mask(
+    n: int,
+    idcs_airfoil: torch.Tensor,
+    max_points: int,
+    seed: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """
+    Subsample up to ``max_points`` from **non-airfoil** nodes only.
+
+    Airfoil geometry is drawn in a separate trace with a fixed color; including those
+    indices here would paint the body with the error / |v| colormap.
+    """
+    is_af = torch.zeros(n, dtype=torch.bool, device=device)
+    if idcs_airfoil.numel() > 0:
+        is_af[idcs_airfoil.long().to(device)] = True
+    bulk_idx = (~is_af).nonzero(as_tuple=False).flatten()
+    if bulk_idx.numel() == 0:
+        return torch.zeros(n, dtype=torch.bool, device=device)
+    nb = int(bulk_idx.numel())
+    if nb <= max_points:
+        m = torch.zeros(n, dtype=torch.bool, device=device)
+        m[bulk_idx] = True
+        return m
+    g = torch.Generator()
+    g.manual_seed(seed)
+    perm = torch.randperm(nb, generator=g)
+    chosen = bulk_idx[perm[:max_points].to(device)]
+    m = torch.zeros(n, dtype=torch.bool, device=device)
+    m[chosen] = True
+    return m
+
+
+def _color_metric_tensor(
     pred_v: torch.Tensor,
     actual_v: torch.Tensor,
     err_mag: torch.Tensor,
     mode: str,
     *,
-    log_scale: bool,
     eps: float = 1e-6,
-) -> tuple[np.ndarray, str, str, str]:
-    """Returns (c_numpy, trace_name, colorbar_title, colorscale_name)."""
+) -> tuple[torch.Tensor, str, str, str]:
+    """Linear scalar used for coloring (before optional log₁₀). Returns (c, name, cbar, colorscale)."""
     spd_p = speed_magnitude(pred_v)
     spd_a = speed_magnitude(actual_v)
     if mode == "abs_error":
@@ -49,13 +94,28 @@ def _color_values(
         colorscale = "Turbo"
     else:
         raise ValueError(mode)
+    return c, name, cbar, colorscale
 
+
+def _color_values(
+    pred_v: torch.Tensor,
+    actual_v: torch.Tensor,
+    err_mag: torch.Tensor,
+    mode: str,
+    *,
+    log_scale: bool,
+    eps: float = 1e-6,
+) -> tuple[np.ndarray, str, str, str]:
+    """Returns (c_numpy, trace_name, colorbar_title, colorscale_name)."""
+    c, _name, cbar, colorscale = _color_metric_tensor(
+        pred_v, actual_v, err_mag, mode, eps=eps
+    )
     c_np = c.detach().float().cpu().numpy()
     if log_scale:
         c_np = np.log10(c_np + eps)
         cbar = f"log₁₀({cbar})" if "log" not in cbar else cbar
 
-    return c_np, name, cbar, colorscale
+    return c_np, _name, cbar, colorscale
 
 
 def _cap_color_range(
@@ -86,19 +146,39 @@ def figure_3d_scatter(
     color_mode: str,
     log_scale: bool = False,
     color_cap_percentile: float | None = 99.0,
+    min_color_metric: float | None = None,
     template: str = "plotly_dark",
 ) -> go.Figure:
     """
     Single 3D scatter: bulk cloud colored by chosen metric; airfoil overlay.
 
     ``color_mode``: abs_error | rel_error | speed_pred | speed_actual | speed_mag_error
+
+    ``min_color_metric``: if set, keep only bulk points whose **linear** color metric is
+    >= this value (same units as the colorbar before log₁₀). Log scale only affects display.
     """
     n = pos.shape[0]
-    m = decimate_mask(n, max_points, decimate_seed)
-    pos_np = pos[m].detach().cpu().numpy()
+    m = _field_decimate_mask(n, idcs_airfoil, max_points, decimate_seed, pos.device)
+    pos_m = pos[m]
     pred_m = pred_v[m]
     act_m = actual_v[m]
     err_m = err_mag[m]
+
+    if min_color_metric is not None:
+        metric_t, _, _, _ = _color_metric_tensor(pred_m, act_m, err_m, color_mode)
+        fk = metric_t >= min_color_metric
+        if fk.any():
+            pos_m = pos_m[fk]
+            pred_m = pred_m[fk]
+            act_m = act_m[fk]
+            err_m = err_m[fk]
+        else:
+            pos_m = pos_m[:0]
+            pred_m = pred_m[:0]
+            act_m = act_m[:0]
+            err_m = err_m[:0]
+
+    pos_np = pos_m.detach().cpu().numpy()
 
     c_np, _name, cbar, colorscale = _color_values(
         pred_m, act_m, err_m, color_mode, log_scale=log_scale
@@ -130,7 +210,10 @@ def figure_3d_scatter(
         )
     )
     _add_airfoil_trace(fig, pos, idcs_airfoil)
-    _layout_3d(fig, title=_title_for_mode(color_mode), template=template)
+    title = _title_for_mode(color_mode)
+    if min_color_metric is not None:
+        title += f" — bulk: metric ≥ {min_color_metric:g} (linear)"
+    _layout_3d(fig, title=title, template=template)
     return fig
 
 
@@ -155,12 +238,7 @@ def _add_airfoil_trace(fig: go.Figure, pos: torch.Tensor, idcs_airfoil: torch.Te
             y=sp[:, 1],
             z=sp[:, 2],
             mode="markers",
-            marker=dict(
-                size=3,
-                color="#ffcc00",
-                opacity=0.95,
-                line=dict(width=0.4, color="rgba(255,255,255,0.7)"),
-            ),
+            marker=_airfoil_marker(size=4.5),
             name="airfoil",
             hovertemplate="airfoil<extra></extra>",
         )
@@ -193,19 +271,38 @@ def figure_3d_speed_comparison(
     max_points: int,
     decimate_seed: int,
     log_scale: bool = False,
+    min_color_metric: float | None = None,
     template: str = "plotly_dark",
 ) -> go.Figure:
     """Two scatter3d panels: |v| pred vs |v| actual (same decimation, shared scale)."""
     n = pos.shape[0]
-    m = decimate_mask(n, max_points, decimate_seed)
-    pos_np = pos[m].detach().cpu().numpy()
-    spd_p = speed_magnitude(pred_v[m]).detach().float().cpu().numpy()
-    spd_a = speed_magnitude(actual_v[m]).detach().float().cpu().numpy()
+    m = _field_decimate_mask(n, idcs_airfoil, max_points, decimate_seed, pos.device)
+    pos_m = pos[m]
+    spd_p_t = speed_magnitude(pred_v[m]).detach().float()
+    spd_a_t = speed_magnitude(actual_v[m]).detach().float()
+    if min_color_metric is not None:
+        fk = torch.maximum(spd_p_t, spd_a_t) >= min_color_metric
+        if fk.any():
+            pos_m = pos_m[fk]
+            spd_p_t = spd_p_t[fk]
+            spd_a_t = spd_a_t[fk]
+        else:
+            pos_m = pos_m[:0]
+            spd_p_t = spd_p_t[:0]
+            spd_a_t = spd_a_t[:0]
+    pos_np = pos_m.detach().cpu().numpy()
+    spd_p = spd_p_t.cpu().numpy()
+    spd_a = spd_a_t.cpu().numpy()
     if log_scale:
         spd_p = np.log10(spd_p + 1e-8)
         spd_a = np.log10(spd_a + 1e-8)
-    vmax = float(np.percentile(np.maximum(spd_p, spd_a), 99.5))
-    vmin = float(np.percentile(np.minimum(spd_p, spd_a), 0.5))
+    if spd_p.size == 0:
+        vmin, vmax = 0.0, 1.0
+    else:
+        vmax = float(np.percentile(np.maximum(spd_p, spd_a), 99.5))
+        vmin = float(np.percentile(np.minimum(spd_p, spd_a), 0.5))
+        if vmin >= vmax:
+            vmax = vmin + 1e-8
 
     fig = make_subplots(
         rows=1,
@@ -250,7 +347,7 @@ def figure_3d_speed_comparison(
                     y=sp[:, 1],
                     z=sp[:, 2],
                     mode="markers",
-                    marker=dict(size=2, color="#ffcc00", opacity=0.9),
+                    marker=_airfoil_marker(size=4.0),
                     name="airfoil",
                     showlegend=(col == 2),
                 ),
@@ -258,8 +355,11 @@ def figure_3d_speed_comparison(
                 col=col,
             )
 
+    title_txt = "3D: |v| prediction vs actual (same color scale)"
+    if min_color_metric is not None:
+        title_txt += f" — bulk: max(|vₚ|,|vₐ|) ≥ {min_color_metric:g} (linear)"
     fig.update_layout(
-        title=dict(text="3D: |v| prediction vs actual (same color scale)", x=0.5, xanchor="center"),
+        title=dict(text=title_txt, x=0.5, xanchor="center"),
         template=template,
         height=520,
         margin=dict(t=80, b=0),

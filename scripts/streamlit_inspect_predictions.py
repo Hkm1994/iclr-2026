@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 
@@ -13,6 +14,12 @@ if str(_ROOT) not in sys.path:
 import matplotlib.pyplot as plt
 import streamlit as st
 import torch
+
+import training.inspect_plotly_3d as _inspect_plotly_3d
+
+importlib.reload(_inspect_plotly_3d)
+figure_3d_scatter = _inspect_plotly_3d.figure_3d_scatter
+figure_3d_speed_comparison = _inspect_plotly_3d.figure_3d_speed_comparison
 
 from training.diagnostics_velocity import (
     error_percentiles,
@@ -29,7 +36,6 @@ from training.inspect_predictions_common import (
     load_train_config_only,
     resolve_device,
 )
-from training.inspect_plotly_3d import figure_3d_scatter, figure_3d_speed_comparison
 from training.inspect_viz import (
     frames_for_animation,
     plot_error_slice_only,
@@ -37,6 +43,44 @@ from training.inspect_viz import (
     png_list_to_gif_bytes,
     speed_magnitude,
 )
+
+# YAML files under configs/ that are not training entrypoints (data / eval manifests).
+_CONFIG_SKIP = frozenset(
+    {
+        "data_split.yaml",
+        "eval_protocol.yaml",
+        "leaderboard_manifest.example.yaml",
+    }
+)
+
+
+def _project_relative(path: Path, root: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _discover_training_configs(root: Path) -> list[Path]:
+    d = root / "configs"
+    if not d.is_dir():
+        return []
+    paths = [p for p in d.glob("*.yaml") if p.name not in _CONFIG_SKIP]
+    return sorted(paths, key=lambda p: p.name.lower())
+
+
+def _discover_checkpoints(root: Path) -> list[Path]:
+    ck = root / "checkpoints"
+    if not ck.is_dir():
+        return []
+    paths = list(ck.rglob("*.pt"))
+    return sorted(paths, key=lambda p: str(p.relative_to(ck)).lower())
+
+
+def _selectbox_default_index(labels: list[str], preferred: str) -> int:
+    if preferred in labels:
+        return labels.index(preferred)
+    return 0
 
 
 @st.cache_resource
@@ -68,10 +112,33 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Setup")
-        cfg_default = str(_ROOT / "configs/example_mlp.yaml")
-        ckpt_default = str(_ROOT / "checkpoints/mlp_last.pt")
-        config_path = st.text_input("Training YAML", value=cfg_default)
-        checkpoint_path = st.text_input("Checkpoint .pt", value=ckpt_default)
+        cfg_paths = _discover_training_configs(_ROOT)
+        ckpt_paths = _discover_checkpoints(_ROOT)
+
+        if cfg_paths:
+            cfg_labels = [_project_relative(p, _ROOT) for p in cfg_paths]
+            cfg_ix = _selectbox_default_index(cfg_labels, "configs/example_mlp.yaml")
+            cfg_choice = st.selectbox("Training config", cfg_labels, index=cfg_ix)
+            config_path = str(_ROOT / cfg_choice)
+        else:
+            st.warning("No training YAML found under `configs/` (after filters).")
+            config_path = st.text_input(
+                "Training YAML (path)",
+                value=str(_ROOT / "configs/example_mlp.yaml"),
+            )
+
+        if ckpt_paths:
+            ck_labels = [_project_relative(p, _ROOT) for p in ckpt_paths]
+            ck_ix = _selectbox_default_index(ck_labels, "checkpoints/mlp_last.pt")
+            ck_choice = st.selectbox("Checkpoint", ck_labels, index=ck_ix)
+            checkpoint_path = str(_ROOT / ck_choice)
+        else:
+            st.info("No `.pt` files under `checkpoints/`; enter a path manually.")
+            checkpoint_path = st.text_input(
+                "Checkpoint .pt",
+                value=str(_ROOT / "checkpoints/mlp_last.pt"),
+            )
+
         split = st.selectbox("Split", ("val", "test", "train"), index=0)
         buffer_k = st.number_input("Buffer size K (batches)", min_value=1, max_value=64, value=8)
         device_choice = st.selectbox("Device", ("auto", "cpu", "cuda", "mps"), index=0)
@@ -241,6 +308,23 @@ def main() -> None:
         horizontal=True,
     )
     dec_seed = st.number_input("3D decimate seed", 0, 2**31 - 1, 42)
+    use_metric_floor = st.checkbox(
+        "Only show bulk points with metric ≥ threshold",
+        value=False,
+        help="Uses linear units of the current color quantity (not log₁₀). Airfoil overlay is unchanged.",
+    )
+    min_metric_3d: float | None = None
+    if use_metric_floor:
+        min_metric_3d = float(
+            st.number_input(
+                "Threshold (linear)",
+                min_value=0.0,
+                value=0.01,
+                format="%.6g",
+                step=1e-4,
+                help="Single cloud: matches the selected color metric. Side-by-side: max(|v_pred|, |v_actual|).",
+            )
+        )
     if view_3d.startswith("Single"):
         _metric_labels = {
             "rel_error": "Relative ‖Δv‖₂ / (|vₐ|+ε) — best default when |v| varies (stagnation vs jet)",
@@ -268,6 +352,7 @@ def main() -> None:
             color_mode=color_mode,
             log_scale=log_colors,
             color_cap_percentile=99.0 if cap_outliers else None,
+            min_color_metric=min_metric_3d,
         )
     else:
         log_v = st.checkbox("log₁₀ |v| coloring", value=False, key="side_by_side_log_v")
@@ -279,11 +364,13 @@ def main() -> None:
             max_points=int(max_3d),
             decimate_seed=int(dec_seed),
             log_scale=log_v,
+            min_color_metric=min_metric_3d,
         )
     st.plotly_chart(fig3, use_container_width=True)
     st.caption(
         "Use **relative error** to see mistakes where the flow is slow; **absolute error** for overall "
-        "severity. **Side-by-side |v|** checks spatial pattern of speed without mixing in direction error."
+        "severity. **Side-by-side |v|** checks spatial pattern of speed without mixing in direction error. "
+        "Optional **metric floor** hides low-magnitude bulk points so high-error (or high-|v|) regions stand out."
     )
 
     st.markdown("### Histograms")
