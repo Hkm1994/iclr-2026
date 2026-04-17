@@ -11,7 +11,6 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import matplotlib.pyplot as plt
-import plotly.graph_objects as go
 import streamlit as st
 import torch
 
@@ -30,15 +29,12 @@ from training.inspect_predictions_common import (
     load_train_config_only,
     resolve_device,
 )
+from training.inspect_plotly_3d import figure_3d_scatter, figure_3d_speed_comparison
 from training.inspect_viz import (
-    decimate_mask,
     frames_for_animation,
     plot_error_slice_only,
     plot_slice_row,
     png_list_to_gif_bytes,
-    project_slice_xy,
-    slice_indices,
-    slice_tolerance,
     speed_magnitude,
 )
 
@@ -52,50 +48,6 @@ def _cached_model(config_path: str, checkpoint_path: str, device_str: str) -> to
 def _axis_coord_defaults(pos: torch.Tensor, axis: str) -> float:
     i = {"x": 0, "y": 1, "z": 2}[axis]
     return float(pos[:, i].median().cpu())
-
-
-def _plotly_3d_error(
-    pos: torch.Tensor,
-    err_mag: torch.Tensor,
-    idcs_airfoil: torch.Tensor,
-    max_points: int,
-    decimate_seed: int,
-) -> go.Figure:
-    n = pos.shape[0]
-    m = decimate_mask(n, max_points, decimate_seed)
-    pm = m.cpu().numpy()
-    x, y, z = pos[m].detach().cpu().numpy().T
-    c = err_mag[m].detach().cpu().numpy()
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter3d(
-            x=x,
-            y=y,
-            z=z,
-            mode="markers",
-            marker=dict(size=2, color=c, colorscale="Turbo", opacity=0.45, showscale=True),
-            name="error",
-        )
-    )
-    if idcs_airfoil.numel() > 0:
-        sp = pos[idcs_airfoil.long()].detach().cpu().numpy()
-        fig.add_trace(
-            go.Scatter3d(
-                x=sp[:, 0],
-                y=sp[:, 1],
-                z=sp[:, 2],
-                mode="markers",
-                marker=dict(size=2, color="black", opacity=0.9),
-                name="airfoil",
-            )
-        )
-    fig.update_layout(
-        title="||pred − actual|| (decimated)",
-        scene=dict(aspectmode="data"),
-        margin=dict(l=0, r=0, t=40, b=0),
-        height=520,
-    )
-    return fig
 
 
 def main() -> None:
@@ -283,9 +235,56 @@ def main() -> None:
     plt.close(fig_err)
 
     st.markdown("### 3D (Plotly, decimated)")
+    view_3d = st.radio(
+        "3D layout",
+        ("Single cloud (pick color metric)", "Side-by-side |v| pred vs actual"),
+        horizontal=True,
+    )
     dec_seed = st.number_input("3D decimate seed", 0, 2**31 - 1, 42)
-    fig3 = _plotly_3d_error(pos, em, batch.idcs_airfoil[b_in], int(max_3d), int(dec_seed))
+    if view_3d.startswith("Single"):
+        _metric_labels = {
+            "rel_error": "Relative ‖Δv‖₂ / (|vₐ|+ε) — best default when |v| varies (stagnation vs jet)",
+            "abs_error": "Absolute ‖Δv‖₂ — raw vector error",
+            "speed_mag_error": "| |vₚ| − |vₐ| | — too fast/slow only (no direction)",
+            "speed_pred": "|v| prediction",
+            "speed_actual": "|v| actual",
+        }
+        color_mode = st.selectbox(
+            "Color metric",
+            list(_metric_labels.keys()),
+            index=0,
+            format_func=lambda k: _metric_labels[k],
+        )
+        log_colors = st.checkbox("log₁₀ color scale", value=False)
+        cap_outliers = st.checkbox("Cap color scale at p1–p99 (reduce outlier washout)", value=True)
+        fig3 = figure_3d_scatter(
+            pos,
+            pv,
+            av,
+            em,
+            batch.idcs_airfoil[b_in],
+            max_points=int(max_3d),
+            decimate_seed=int(dec_seed),
+            color_mode=color_mode,
+            log_scale=log_colors,
+            color_cap_percentile=99.0 if cap_outliers else None,
+        )
+    else:
+        log_v = st.checkbox("log₁₀ |v| coloring", value=False, key="side_by_side_log_v")
+        fig3 = figure_3d_speed_comparison(
+            pos,
+            pv,
+            av,
+            batch.idcs_airfoil[b_in],
+            max_points=int(max_3d),
+            decimate_seed=int(dec_seed),
+            log_scale=log_v,
+        )
     st.plotly_chart(fig3, use_container_width=True)
+    st.caption(
+        "Use **relative error** to see mistakes where the flow is slow; **absolute error** for overall "
+        "severity. **Side-by-side |v|** checks spatial pattern of speed without mixing in direction error."
+    )
 
     st.markdown("### Histograms")
     fig_h, axh = plt.subplots(1, 2, figsize=(9, 3))
