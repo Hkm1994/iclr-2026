@@ -23,6 +23,7 @@ This repo includes a small training pipeline: **Hugging Face streaming**, centra
 - **Model lineage (diagram + rationale):** [docs/MODEL_LINEAGE.md](docs/MODEL_LINEAGE.md)
 - **Experiments / MLflow:** [docs/EXPERIMENTS_AND_MLFLOW.md](docs/EXPERIMENTS_AND_MLFLOW.md)
 - **Pre-PR checks:** [docs/SUBMISSION_CHECKLIST.md](docs/SUBMISSION_CHECKLIST.md)
+- **Inspect predictions (Streamlit 3D + CLI):** [docs/INSPECT_PREDICTIONS.md](docs/INSPECT_PREDICTIONS.md)
 
 Quick start:
 

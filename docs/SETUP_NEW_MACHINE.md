@@ -24,6 +24,8 @@ pip install -r requirements-extras.txt
 
 Follow [PyG install](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html) if `torch-geometric` fails.
 
+The same extras file pulls in **Streamlit** and **Plotly** for the prediction inspector (`streamlit run scripts/streamlit_inspect_predictions.py`). See [INSPECT_PREDICTIONS.md](INSPECT_PREDICTIONS.md).
+
 ## Offline / local data (optional)
 
 If you downloaded the dataset to a folder (e.g. `huggingface-cli download … --local-dir data/warped-ifw`), set in `configs/data_split.yaml` under `dataset:` **`source: local`** and **`local_path: …`** (see [SPLIT_CONFIGURATION.md](SPLIT_CONFIGURATION.md)). Run training from the repo root if using a relative path. No HF access is required at train time for that mode.
