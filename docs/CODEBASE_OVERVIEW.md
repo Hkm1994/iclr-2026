@@ -62,7 +62,7 @@ If `train.eval_preforward_subsample_N` is set, **`subsample_batch_preforward`** 
 
 ## Registered models
 
-Names are defined in **`models/registry.py`**: `tiny_linear`, `mlp`, `strong_mlp`, `strong_mlp_knn`, `strong_mlp_knn_mp`. Adding a model is described in **`docs/ADDING_A_MODEL.md`**.
+Names are defined in **`models/registry.py`**: `tiny_linear`, `mlp`, `strong_mlp`, `strong_mlp_knn`, `strong_mlp_knn_mp`, `strong_mlp_knn_mp_v2`, `strong_mlp_knn_mp_v2_temporal`. Adding a model is described in **`docs/ADDING_A_MODEL.md`**.
 
 ## Related docs
 

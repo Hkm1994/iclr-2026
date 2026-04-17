@@ -24,8 +24,10 @@ entries:
     training_config: configs/strong_baseline_knn_mp_v2.yaml
     checkpoint: checkpoints/strong_mlp_knn_mp_v2_best.pt
 
-
-  # Uncomment after training configs/strong_baseline_knn_mp_v2.yaml
-  # - label: strong_mlp_knn_mp_v2_best
-  #   training_config: configs/strong_baseline_knn_mp_v2.yaml
-  #   checkpoint: checkpoints/strong_mlp_knn_mp_v2_best.pt
+  # After training temporal + tuned variants (paths must exist):
+  # - label: strong_mlp_knn_mp_v2_temporal_best
+  #   training_config: configs/strong_baseline_knn_mp_v2_temporal.yaml
+  #   checkpoint: checkpoints/strong_mlp_knn_mp_v2_temporal_best.pt
+  # - label: strong_mlp_knn_mp_v2_temporal_tuned_best
+  #   training_config: configs/strong_baseline_knn_mp_v2_temporal_tuned.yaml
+  #   checkpoint: checkpoints/strong_mlp_knn_mp_v2_temporal_tuned_best.pt

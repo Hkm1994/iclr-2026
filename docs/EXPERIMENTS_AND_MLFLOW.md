@@ -73,5 +73,9 @@ Edit the manifest to point `training_config` and `checkpoint` at each run; optio
 | `configs/strong_baseline_cosine.yaml`, `strong_baseline_stratified.yaml` | `strong_mlp` (schedule / subsampling variants) |
 | `configs/strong_baseline_knn.yaml` | `strong_mlp_knn` |
 | `configs/strong_baseline_knn_mp.yaml` | `strong_mlp_knn_mp` |
+| `configs/strong_baseline_knn_mp_v2.yaml` | `strong_mlp_knn_mp_v2` |
+| `configs/strong_baseline_knn_mp_v2_temporal.yaml` | `strong_mlp_knn_mp_v2_temporal` |
+| `configs/strong_baseline_knn_mp_v2_temporal_tuned.yaml` | `strong_mlp_knn_mp_v2_temporal` (EMA + weighted loss) |
+| `configs/strong_baseline_knn_mp_v2_levers.yaml` | `strong_mlp_knn_mp_v2` (weighted loss only) |
 
 Other `configs/example_*.yaml` files may reference model names not yet registered; use them as templates after you add the model to `models/registry.py`. For how data reaches the model, see [CODEBASE_OVERVIEW.md](CODEBASE_OVERVIEW.md).

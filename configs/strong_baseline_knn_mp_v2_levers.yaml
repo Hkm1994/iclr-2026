@@ -1,0 +1,58 @@
+# strong_mlp_knn_mp_v2 with plan training levers only (no temporal block).
+# Compare against strong_baseline_knn_mp_v2.yaml and temporal configs in MLflow.
+
+experiment:
+  mlflow_experiment_name: gram-warped-ifw-strong
+
+paths:
+  data_split: configs/data_split.yaml
+  eval_protocol: configs/eval_protocol.yaml
+
+train:
+  model: strong_mlp_knn_mp_v2
+  model_family: strong_mlp_knn_mp_v2
+  lr: 0.0003
+  weight_decay: 0.025
+  batch_size: 1
+  grad_accum_steps: 1
+  train_subsample_N: 8192
+  train_point_seed: 0
+  eval_preforward_subsample_N: 8192
+  device: mps
+
+  model_config:
+    mp_hidden_dim: 128
+    dropout_probability: 0.15
+    num_channels: [314, 512, 512, 256]
+
+  loss_turb_weight_alpha: 0.5
+  loss_timestep_weights: [0.9, 0.95, 1.0, 1.05, 1.1]
+
+  lr_warmup_epochs: 0
+  lr_schedule:
+    type: plateau
+    mode: min
+    factor: 0.5
+    patience: 3
+    min_lr: 1.0e-7
+    threshold: 1.0e-4
+
+  eval_test_at_end: true
+  max_epochs: 200
+  min_epochs: 20
+  early_stopping_patience: 10
+  early_stopping_min_delta: 1.0e-5
+  early_stopping_monitor: val/l2_per_point_mean
+  early_stopping_lower_is_better: null
+
+  best_checkpoint_path: checkpoints/strong_mlp_knn_mp_v2_levers_best.pt
+  last_checkpoint_path: checkpoints/strong_mlp_knn_mp_v2_levers_last.pt
+  heartbeat_seconds: 180
+  verbose: true
+  log_every_n_train_batches: 100
+  log_every_n_val_batches: 100
+  max_train_steps: null
+  max_val_steps: null
+
+  use_ema: true
+  ema_decay: 0.999

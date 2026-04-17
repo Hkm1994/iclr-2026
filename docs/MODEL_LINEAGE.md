@@ -17,11 +17,13 @@ flowchart TB
   subgraph mp [Geometry + message passing]
     SMP[strong_mlp_knn_mp]
     SMP2[strong_mlp_knn_mp_v2]
+    SMP2T[strong_mlp_knn_mp_v2_temporal]
   end
   MLP --> SM
   SM --> SK
   SK --> SMP
   SMP --> SMP2
+  SMP2 --> SMP2T
 ```
 
 ## Registry overview
@@ -34,8 +36,9 @@ flowchart TB
 | `strong_mlp_knn` | [`models/strong_mlp_knn/`](../models/strong_mlp_knn/) | **Local neighborhood**: kNN once, neighbor attention + per-τ neighbor means |
 | `strong_mlp_knn_mp` | [`models/strong_mlp_knn_mp/`](../models/strong_mlp_knn_mp/) | kNN + **distance-to-airfoil** + **one** residual message-passing block |
 | `strong_mlp_knn_mp_v2` | [`models/strong_mlp_knn_mp_v2/`](../models/strong_mlp_knn_mp_v2/) | **Two** MP blocks, **attention-weighted** neighbor messages, **richer edges** |
+| `strong_mlp_knn_mp_v2_temporal` | [`models/strong_mlp_knn_mp_v2_temporal/`](../models/strong_mlp_knn_mp_v2_temporal/) | Same as v2 + **residual temporal Conv1d** on `velocity_in` before kNN/MP |
 
-Example configs: `configs/example_mlp.yaml`, `configs/strong_baseline*.yaml`, `configs/strong_baseline_knn_mp.yaml`, `configs/strong_baseline_knn_mp_v2.yaml`.
+Example configs: `configs/example_mlp.yaml`, `configs/strong_baseline*.yaml`, `configs/strong_baseline_knn_mp.yaml`, `configs/strong_baseline_knn_mp_v2.yaml`, `configs/strong_baseline_knn_mp_v2_temporal.yaml`.
 
 ---
 
@@ -73,6 +76,12 @@ Example configs: `configs/example_mlp.yaml`, `configs/strong_baseline*.yaml`, `c
 **Merge** widened to **Option A:** `concat(x_raw, h1, h2)` so the trunk sees both MP stages.
 
 **Why:** Empirical runs showed error dominated by **high-fluctuation (“turbulent proxy”)** regions and slightly worse **late output timesteps**. Deeper local mixing, learned neighbor importance on messages, and velocity-geometry edges target those failure modes without changing the I/O contract. **v1 is left untouched** so older checkpoints and comparisons stay valid.
+
+### `strong_mlp_knn_mp_v2_temporal` (vs `strong_mlp_knn_mp_v2`)
+
+**Design:** **Subclass** of v2. Per point, apply a small **Conv1d** stack along the input time axis to produce a residual added to `velocity_in`; then run the unchanged v2 forward on the mixed series (kNN, MP, trunk).
+
+**Why:** Gives an explicit **temporal** mixing step before spatial message passing, targeting **multi-step input dynamics** and late-`T_out` error without a third MP block.
 
 ---
 

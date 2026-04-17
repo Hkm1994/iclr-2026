@@ -28,7 +28,7 @@ from models.your_model.model import YourModel
 MODELS["your_model"] = YourModel
 ```
 
-Current keys: `tiny_linear`, `mlp`, `strong_mlp`, `strong_mlp_knn`, `strong_mlp_knn_mp` (see `MODELS` in that file).
+Current keys: `tiny_linear`, `mlp`, `strong_mlp`, `strong_mlp_knn`, `strong_mlp_knn_mp`, `strong_mlp_knn_mp_v2`, `strong_mlp_knn_mp_v2_temporal` (see `MODELS` in `models/registry.py`).
 
 ## Config
 
