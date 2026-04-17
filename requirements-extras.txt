@@ -1,3 +1,9 @@
 # Optional: GNN / graph experiments (install torch first, then PyG per https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html)
 -r requirements.txt
 torch-geometric>=2.4.0
+
+# Inspect predictions UI (Streamlit + 3D plots + GIF)
+streamlit>=1.28.0
+plotly>=5.18.0
+pillow>=10.0.0
+scipy>=1.11.0
