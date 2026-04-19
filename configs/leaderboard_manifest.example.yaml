@@ -28,7 +28,10 @@ entries:
     training_config: configs/strong_baseline_knn_mp_v2_temporal.yaml
     checkpoint: checkpoints/strong_mlp_knn_mp_v2_temporal_best.pt
 
-  # Uncomment when trained:
-  # - label: strong_mlp_knn_mp_v2_temporal_tuned_best
-  #   training_config: configs/strong_baseline_knn_mp_v2_temporal_tuned.yaml
-  #   checkpoint: checkpoints/strong_mlp_knn_mp_v2_temporal_tuned_best.pt
+  - label: strong_mlp_knn_mp_v2_temporal_tuned_best
+    training_config: configs/strong_baseline_knn_mp_v2_temporal_tuned.yaml
+    checkpoint: checkpoints/strong_mlp_knn_mp_v2_temporal_tuned_best.pt
+
+  - label: strong_mlp_knn_mp_v2_levers_best
+    training_config: configs/strong_baseline_knn_mp_v2_levers.yaml
+    checkpoint: checkpoints/strong_mlp_knn_mp_v2_levers_best.pt
