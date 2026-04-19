@@ -40,6 +40,8 @@ flowchart TB
 
 Example configs: `configs/example_mlp.yaml`, `configs/strong_baseline*.yaml`, `configs/strong_baseline_knn_mp.yaml`, `configs/strong_baseline_knn_mp_v2.yaml`, `configs/strong_baseline_knn_mp_v2_temporal.yaml`.
 
+**Training-only lineage (same `strong_mlp_knn_mp_v2` weights layout):** `configs/strong_baseline_knn_mp_v2_levers.yaml` (EMA + turb proxy + mild per–output-timestep MSE weights) and **`configs/strong_baseline_knn_mp_v2_levers_tail.yaml`** (same stack, **stronger tail** `loss_timestep_weights` for late horizon). Filter MLflow by `model_family` / `config_file`; compare with `scripts/compare_levers_tail_mlflow.py`.
+
 ---
 
 ## Why each iteration

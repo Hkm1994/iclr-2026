@@ -35,3 +35,7 @@ entries:
   - label: strong_mlp_knn_mp_v2_levers_best
     training_config: configs/strong_baseline_knn_mp_v2_levers.yaml
     checkpoint: checkpoints/strong_mlp_knn_mp_v2_levers_best.pt
+
+  - label: strong_mlp_knn_mp_v2_levers_tail_best
+    training_config: configs/strong_baseline_knn_mp_v2_levers_tail.yaml
+    checkpoint: checkpoints/strong_mlp_knn_mp_v2_levers_tail_best.pt

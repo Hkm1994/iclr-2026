@@ -78,7 +78,7 @@ Names are defined in **`models/registry.py`**: `tiny_linear`, `mlp`, `strong_mlp
 
 | Area | Files |
 |------|--------|
-| Train CLI | `scripts/train.py` |
+| Train CLI | `scripts/train.py` (optional `--max-epochs` smoke override), `scripts/compare_levers_tail_mlflow.py` |
 | HF stream + collate | `training/hf_dataset.py`, `training/hf_npz_hub.py`, `training/split_assign.py`, `training/explicit_ids.py` |
 | Loops + eval splits | `training/epoch_loop.py` |
 | Losses / metrics | `training/metrics.py` |

@@ -497,6 +497,12 @@ def main() -> int:
     ap.add_argument("--config", type=str, default="configs/example_mlp.yaml")
     ap.add_argument("--max-train-steps", type=int, default=None)
     ap.add_argument(
+        "--max-epochs",
+        type=int,
+        default=None,
+        help="Override train.max_epochs (epoch mode only) for smoke runs; omit for YAML value.",
+    )
+    ap.add_argument(
         "--quiet",
         action="store_true",
         help="Disable verbose terminal progress (MLflow batch metrics still logged unless disabled in YAML).",
@@ -569,6 +575,17 @@ def main() -> int:
     )
 
     max_epochs = train_cfg.get("max_epochs")
+    if args.max_epochs is not None:
+        if max_epochs is None:
+            print(
+                "--max-epochs is only valid when train.max_epochs is set (epoch mode).",
+                file=sys.stderr,
+            )
+            return 1
+        train_cfg = dict(train_cfg)
+        train_cfg["max_epochs"] = int(args.max_epochs)
+        max_epochs = train_cfg["max_epochs"]
+        cfg["train"] = train_cfg
     use_epochs = max_epochs is not None
 
     verbose = bool(train_cfg.get("verbose", True)) and not args.quiet

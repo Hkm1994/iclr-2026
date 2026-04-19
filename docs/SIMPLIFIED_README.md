@@ -35,7 +35,7 @@ iclr-2026/
 
 ## Code flow (training, in order)
 
-1. **You run** `python scripts/train.py --config configs/<something>.yaml` (with `PYTHONPATH=.` or from repo root as in [SETUP_NEW_MACHINE.md](SETUP_NEW_MACHINE.md)).
+1. **You run** `python scripts/train.py --config configs/<something>.yaml` (with `PYTHONPATH=.` or from repo root as in [SETUP_NEW_MACHINE.md](SETUP_NEW_MACHINE.md)). Optional: `--max-epochs N` overrides YAML `train.max_epochs` for short smoke runs (epoch mode only). To compare **levers** vs **levers_tail** MLflow curves: `python scripts/compare_levers_tail_mlflow.py`.
 
 2. **Load YAML:** Training config → paths to `data_split.yaml` and `eval_protocol.yaml` → read seeds, KPIs, subsampling.
 
